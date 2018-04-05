@@ -154,6 +154,7 @@ export class Editor extends srceditor.Editor {
                         })
                 }).catch(e => {
                     pxt.reportException(e);
+                    pxt.tickEvent(`oops.converttoblocks`)
                     core.errorNotification(lf("Oops, something went wrong trying to convert your code."));
                 });
         });

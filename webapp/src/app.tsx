@@ -838,6 +838,7 @@ export class ProjectView
                 .done(() => core.hideLoading("importhex"), e => {
                     pxt.reportException(e, { importer: importer.id });
                     core.hideLoading("importhex");
+                    pxt.tickEvent(`oops.importproject`)
                     core.errorNotification(lf("Oops, something went wrong when importing your project"));
                     if (createNewIfFailed) this.openHome();
                 });
@@ -891,6 +892,7 @@ export class ProjectView
             if (importer) {
                 importer.importAsync(this, file).done();
             } else {
+                pxt.tickEvent(`oops.unknownfile`)
                 core.warningNotification(lf("Oops, don't know how to load this file!"));
             }
         }
@@ -1424,6 +1426,7 @@ export class ProjectView
                     simulator.run(pkg.mainPkg, opts.debug, resp, this.state.mute, this.state.highContrast, pxt.options.light)
                     this.setState({ running: true, showParts: simulator.driver.runOptions.parts.length > 0 })
                 } else if (!opts.background) {
+                    pxt.tickEvent(`oops.runwitherrors`)
                     core.warningNotification(lf("Oops, we could not run this project. Please check your code for errors."))
                 }
             })
@@ -1511,8 +1514,10 @@ export class ProjectView
                             core.infoNotification(lf("Report sent. Thank you!"))
                         })
                         .catch(e => {
-                            if (e.statusCode == 404)
+                            if (e.statusCode == 404) {
+                                pxt.tickEvent(`oops.project404`)
                                 core.warningNotification(lf("Oops, we could not find this script."))
+                            }
                             else
                                 core.handleNetworkError(e)
                         });

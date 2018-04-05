@@ -7,6 +7,10 @@ namespace pxt.blocks.layout {
 
     export function patchBlocksFromOldWorkspace(blockInfo: ts.pxtc.BlocksInfo, oldWs: B.Workspace, newXml: string): string {
         const newWs = pxt.blocks.loadWorkspaceXml(newXml, true);
+        if (!newWs) { // ooops failed to load the new xml
+            pxt.tickEvent('blocks.patch.failed');
+            return newXml;
+        }
         // position blocks
         alignBlocks(blockInfo, oldWs, newWs);
         // inject disabled blocks

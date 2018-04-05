@@ -1347,6 +1347,7 @@ function buildFolderAsync(p: string, optional?: boolean, outputName?: string): P
     }
 
     if (!fs.existsSync("node_modules/typescript")) {
+        pxt.tickEvent(`oops.notypescript`)
         U.userError("Oops, typescript does not seem to be installed, did you run 'npm install'?");
     }
 
@@ -1380,6 +1381,7 @@ function buildFolderAndBrowserifyAsync(p: string, optional?: boolean, outputName
     }
 
     if (!fs.existsSync("node_modules/typescript")) {
+        pxt.tickEvent(`oops.notypescript`)
         U.userError("Oops, typescript does not seem to be installed, did you run 'npm install'?");
     }
 
