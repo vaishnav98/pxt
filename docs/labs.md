@@ -2,12 +2,13 @@
 
 A collection of experimental MakeCode Editors created by the community.
 
+* Got some questions? Join us on the [Community Discord](http://aka.ms/makecodecommunity)!
 
 ## ~hint
 
 Experimental Editors are not supported by the Microsoft MakeCode team.
 To be listed on this page, your editor must be open source on GitHub,
-preferrably under the MIT License. 
+preferably under the MIT License. 
 
 ## ~
 
@@ -66,7 +67,7 @@ MakeCode's support for embedding the MakeCode editor inside of a web app. For mo
 * [Editor](https://samelhusseini.github.io/pxt-holidays/controller.html)
 * [GitHub](https://github.com/samelhusseini/pxt-holidays)
 
-## Johnny-FIve
+## Johnny-Five
 
 A small wrapper around the **Johnny-Five** library.
 
@@ -76,4 +77,4 @@ A small wrapper around the **Johnny-Five** library.
 
 * [Create your own editor](/target-creation)
 * [Contribute](https://github.com/Microsoft/pxt)
-* [Join the Labs slack](https://makecodelabs.slack.com)
+* [Join the MakeCode Discord](http://aka.ms/makecodecommunity)

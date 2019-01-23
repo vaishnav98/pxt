@@ -1,7 +1,8 @@
 namespace pxt.Cloud {
     import Util = pxtc.Util;
 
-    export let apiRoot = "https://makecode.com/api/";
+    // hit /api/ to stay on same domain and avoid CORS
+    export let apiRoot = pxt.BrowserUtils.isLocalHost() || Util.isNodeJS ? "https://www.makecode.com/api/" : "/api/";
     export let accessToken = "";
     export let localToken = "";
     let _isOnline = true;
@@ -15,14 +16,6 @@ namespace pxt.Cloud {
 
     export function hasAccessToken() {
         return !!accessToken
-    }
-
-    export function isLocalHost(): boolean {
-        try {
-            return /^http:\/\/(localhost|127\.0\.0\.1):\d+\//.test(window.location.href)
-                && !/nolocalhost=1/.test(window.location.href)
-                && !(pxt.webConfig && pxt.webConfig.isStatic);
-        } catch (e) { return false; }
     }
 
     export function localRequestAsync(path: string, data?: any) {
@@ -41,8 +34,11 @@ namespace pxt.Cloud {
         if (!Cloud.isOnline()) {
             return offlineError(options.url);
         }
-        if (accessToken) {
-            if (!options.headers) options.headers = {}
+        if (!options.headers) options.headers = {}
+        if (pxt.BrowserUtils.isLocalHost()) {
+            if (Cloud.localToken)
+                options.headers["Authorization"] = Cloud.localToken;
+        } else if (accessToken) {
             options.headers["x-td-access-token"] = accessToken
         }
         return Util.requestAsync(options)
@@ -59,8 +55,8 @@ namespace pxt.Cloud {
             })
     }
 
-    export function privateGetTextAsync(path: string): Promise<string> {
-        return privateRequestAsync({ url: path }).then(resp => resp.text)
+    export function privateGetTextAsync(path: string, headers?: pxt.Map<string>): Promise<string> {
+        return privateRequestAsync({ url: path, headers }).then(resp => resp.text)
     }
 
     export function privateGetAsync(path: string, forceLiveEndpoint: boolean = false): Promise<any> {
@@ -71,8 +67,9 @@ namespace pxt.Cloud {
         if (!Cloud.isOnline()) // offline
             return Promise.resolve(undefined);
 
-        const url = pxt.webConfig && pxt.webConfig.isStatic ? `targetconfig.json` : `config/${pxt.appTarget.id}/targetconfig`;
-        if (Cloud.isLocalHost())
+        const targetVersion = pxt.appTarget.versions && pxt.appTarget.versions.target;
+        const url = pxt.webConfig && pxt.webConfig.isStatic ? `targetconfig.json` : `config/${pxt.appTarget.id}/targetconfig${targetVersion ? `/v${targetVersion}` : ''}`;
+        if (pxt.BrowserUtils.isLocalHost())
             return localRequestAsync(url).then(r => r ? r.json : undefined)
         else
             return Cloud.privateGetAsync(url);
@@ -84,13 +81,38 @@ namespace pxt.Cloud {
         })
     }
 
-    export function downloadMarkdownAsync(docid: string, locale?: string, live?: boolean): Promise<string> {
+    // 1h check on markdown content if not on development server
+    const MARKDOWN_EXPIRATION = pxt.BrowserUtils.isLocalHostDev() ? 1 : 1 * 60 * 60 * 1000;
+    export function markdownAsync(docid: string, locale?: string, live?: boolean): Promise<string> {
+        const branch = "";
+        return pxt.BrowserUtils.translationDbAsync()
+            .then(db => db.getAsync(locale, docid, "")
+                .then(entry => {
+                    if (entry && Date.now() - entry.time > MARKDOWN_EXPIRATION)
+                        // background update,
+                        downloadMarkdownAsync(docid, locale, live, entry.etag)
+                            .then(r => db.setAsync(locale, docid, branch, r.etag, undefined, r.md || entry.md))
+                            .catch(() => { }) // swallow errors
+                            .done();
+                    // return cached entry
+                    if (entry && entry.md)
+                        return entry.md;
+                    // download and cache
+                    else return downloadMarkdownAsync(docid, locale, live)
+                        .then(r => db.setAsync(locale, docid, branch, r.etag, undefined, r.md)
+                            .then(() => r.md))
+                        .catch(() => ""); // no translation
+                }))
+    }
+
+    function downloadMarkdownAsync(docid: string, locale?: string, live?: boolean, etag?: string): Promise<{ md: string; etag?: string; }> {
         const packaged = pxt.webConfig && pxt.webConfig.isStatic;
+        const targetVersion = pxt.appTarget.versions && pxt.appTarget.versions.target || '?';
         let url: string;
 
         if (packaged) {
             url = docid;
-            const isUnderDocs = /\/docs\//.test(url);
+            const isUnderDocs = /\/?docs\//.test(url);
             const hasExt = /\.\w+$/.test(url);
             if (!isUnderDocs) {
                 url = `docs/${url}`;
@@ -99,19 +121,24 @@ namespace pxt.Cloud {
                 url = `${url}.md`;
             }
         } else {
-            url = `md/${pxt.appTarget.id}/${docid.replace(/^\//, "")}?targetVersion=${encodeURIComponent(pxt.webConfig.targetVersion)}`;
+            url = `md/${pxt.appTarget.id}/${docid.replace(/^\//, "")}?targetVersion=${encodeURIComponent(targetVersion)}`;
         }
         if (!packaged && locale != "en") {
             url += `&lang=${encodeURIComponent(Util.userLanguage())}`
             if (live) url += "&live=1"
         }
-        if (Cloud.isLocalHost() && !live)
+        if (pxt.BrowserUtils.isLocalHost() && !live)
             return localRequestAsync(url).then(resp => {
                 if (resp.statusCode == 404)
-                    return privateGetTextAsync(url);
-                else return resp.text
+                    return privateRequestAsync({ url, method: "GET" })
+                        .then(resp => { return { md: resp.text, etag: resp.headers["etag"] }; });
+                else return { md: resp.text, etag: undefined };
             });
-        else return privateGetTextAsync(url);
+        else {
+            const headers: pxt.Map<string> = etag ? { "If-None-Match": etag } : undefined;
+            return privateRequestAsync({ url, method: "GET", headers })
+                .then(resp => { return { md: resp.text, etag: resp.headers["etag"] }; });
+        }
     }
 
     export function privateDeleteAsync(path: string) {
@@ -158,15 +185,22 @@ namespace pxt.Cloud {
         const rx = `^((https:\/\/)?(?:${domains.join('|')})\/)?(api\/oembed\?url=.*%2F([^&]*)&.*?|([a-z0-9\-_]+))$`;
         const m = new RegExp(rx, 'i').exec(uri.trim());
         const scriptid = m && (!m[1] || domains.indexOf(Util.escapeForRegex(m[1].replace(/https:\/\//, '').replace(/\/$/, '')).toLowerCase()) >= 0) && (m[3] || m[4]) ? (m[3] ? m[3] : m[4]) : null
-        return scriptid;
+
+        if (!scriptid) return undefined;
+
+        if (scriptid[0] == "_" && scriptid.length == 13)
+            return scriptid;
+
+        if (scriptid.length == 23 && /^[0-9\-]+$/.test(scriptid))
+            return scriptid;
+
+        return undefined;
     }
 
     //
     // Interfaces used by the cloud
     //
 
-    // TODO: remove unused interfaces
-    // TODO: remove unused fields
     export interface JsonIdObject {
         kind: string;
         id: string; // id

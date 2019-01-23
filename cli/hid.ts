@@ -1,18 +1,21 @@
 import HF2 = pxt.HF2
 import U = pxt.U
-import * as commandParser from './commandparser';
+import * as nodeutil from './nodeutil';
+
+function useWebUSB() {
+    return !!pxt.appTarget.compile.webUSB
+}
 
 let HID: any = undefined;
-function getHID(): any {
-    if (HID === undefined) {
-        try {
-            HID = require("node-hid")
-        } catch (e) {
-            pxt.log('node-hid failed to load, ignoring...')
-            HID = null;
-        }
-    }
-    return HID;
+function requireHID(install?: boolean): any {
+    if (useWebUSB())
+        return true
+    if (HID) return HID;
+    return HID = nodeutil.lazyRequire("node-hid", install);
+}
+
+export function isInstalled(install?: boolean): boolean {
+    return !!requireHID(!!install);
 }
 
 export interface HidDevice {
@@ -26,12 +29,18 @@ export interface HidDevice {
 }
 
 export function listAsync() {
-    for (let h of getHF2Devices())
-        console.log(deviceInfo(h))
-    return Promise.resolve()
+    if (!requireHID(true))
+        return Promise.resolve();
+    return getHF2DevicesAsync()
+        .then(devices => {
+            pxt.log(`found ${devices.length} HID devices`);
+            devices.forEach(device => pxt.log(device));
+        })
 }
 
 export function serialAsync() {
+    if (!requireHID(true))
+        return Promise.resolve();
     return initAsync()
         .then(d => {
             d.autoReconnect = true
@@ -40,6 +49,7 @@ export function serialAsync() {
 }
 
 export function dmesgAsync() {
+    HF2.enableLog()
     return initAsync()
         .then(d => d.talkAsync(pxt.HF2.HF2_CMD_DMESG)
             .then(resp => {
@@ -56,10 +66,10 @@ export function deviceInfo(h: HidDevice) {
     return `${h.product} (by ${h.manufacturer} at USB ${hex(h.vendorId)}:${hex(h.productId)})`
 }
 
-export function getHF2Devices() {
-    const hid = getHID();
-    if (!hid) return [];
-    let devices = hid.devices() as HidDevice[]
+function getHF2Devices(): HidDevice[] {
+    if (!requireHID(false))
+        return [];
+    let devices = HID.devices() as HidDevice[]
     for (let d of devices) {
         pxt.debug(JSON.stringify(d))
     }
@@ -69,17 +79,59 @@ export function getHF2Devices() {
         (d.release & 0xff00) == 0x4200)
 }
 
+export function getHF2DevicesAsync(): Promise<HidDevice[]> {
+    return Promise.resolve(getHF2Devices());
+}
+
+function handleDevicesFound(devices: any[], selectFn: any) {
+    if (devices.length > 1) {
+        let d42 = devices.filter(d => d.deviceVersionMajor == 42)
+        if (d42.length > 0)
+            devices = d42
+    }
+    devices.forEach((device: any) => {
+        console.log(`DEV: ${device.productName || device.serialNumber}`);
+    });
+    selectFn(devices[0])
+}
+
 export function hf2ConnectAsync(path: string, raw = false) {
-    return Promise.resolve()
-        .then(() => {
-            // in .then() to make sure we catch errors
-            let h = new HF2.Wrapper(new HidIO(path))
-            h.rawMode = raw
-            return h.reconnectAsync(true).then(() => h)
-        })
+    if (useWebUSB()) {
+        const g = global as any
+        if (!g.navigator)
+            g.navigator = {}
+        if (!g.navigator.usb) {
+            const webusb = nodeutil.lazyRequire("webusb", true)
+            const load = webusb.USBAdapter.prototype.loadDevice;
+            webusb.USBAdapter.prototype.loadDevice = function (device: any) {
+                // skip class 9 - USB HUB, as it causes SEGV on Windows
+                if (device.deviceDescriptor.bDeviceClass == 9)
+                    return Promise.resolve(null)
+                return load.apply(this, arguments)
+            }
+            const USB = webusb.USB
+            g.navigator.usb = new USB({
+                devicesFound: handleDevicesFound
+            })
+        }
+
+        return pxt.usb.pairAsync()
+            .then(() => pxt.usb.mkPacketIOAsync())
+            .then(io => new HF2.Wrapper(io))
+            .then(d => d.reconnectAsync().then(() => d))
+    }
+
+
+    if (!requireHID(true)) return Promise.resolve(undefined);
+    // in .then() to make sure we catch errors
+    let h = new HF2.Wrapper(new HidIO(path))
+    h.rawMode = raw
+    return h.reconnectAsync(true).then(() => h)
 }
 
 export function mkPacketIOAsync() {
+    if (useWebUSB())
+        return hf2ConnectAsync("")
     return Promise.resolve()
         .then(() => {
             // in .then() to make sure we catch errors
@@ -128,9 +180,7 @@ export class HidIO implements HF2.PacketIO {
     }
 
     private connect() {
-        const hid = getHID();
-        U.assert(hid)
-
+        U.assert(requireHID(false))
         if (this.requestedPath == null) {
             let devs = getHF2Devices()
             if (devs.length == 0)

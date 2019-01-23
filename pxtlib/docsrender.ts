@@ -92,6 +92,7 @@ namespace pxt.docs {
         boxes?: Map<string>;
         macros?: Map<string>;
         settings?: Map<string>;
+        TOC?: TOCMenuEntry[];
     }
 
     function parseHtmlAttrs(s: string) {
@@ -173,6 +174,7 @@ namespace pxt.docs {
             href: "/docs"
         }]
 
+        const TOC = d.TOC || theme.TOC || [];
         let tocPath: TOCMenuEntry[] = []
         let isCurrentTOC = (m: TOCMenuEntry) => {
             for (let c of m.subitems || []) {
@@ -187,7 +189,7 @@ namespace pxt.docs {
             }
             return false
         };
-        (theme.TOC || []).forEach(isCurrentTOC)
+        TOC.forEach(isCurrentTOC)
 
         let currentTocEntry: TOCMenuEntry;
         let recTOC = (m: TOCMenuEntry, lev: number) => {
@@ -229,7 +231,7 @@ namespace pxt.docs {
         }
 
         params["menu"] = (theme.docMenu || []).map(e => recMenu(e, 0)).join("\n")
-        params["TOC"] = (theme.TOC || []).map(e => recTOC(e, 0)).join("\n")
+        params["TOC"] = TOC.map(e => recTOC(e, 0)).join("\n")
 
         if (theme.appStoreID)
             params["appstoremeta"] = `<meta name="apple-itunes-app" content="app-id=${U.htmlEscape(theme.appStoreID)}"/>`
@@ -247,19 +249,6 @@ namespace pxt.docs {
 
         params["breadcrumb"] = breadcrumbHtml;
 
-        if (currentTocEntry) {
-            if (currentTocEntry.prevPath) {
-                params["prev"] = `<a href="${currentTocEntry.prevPath}" class="navigation navigation-prev " title="${currentTocEntry.prevName}">
-                                    <i class="icon angle left"></i>
-                                </a>`;
-            }
-            if (currentTocEntry.nextPath) {
-                params["next"] = `<a href="${currentTocEntry.nextPath}" class="navigation navigation-next " title="${currentTocEntry.nextName}">
-                                    <i class="icon angle right"></i>
-                                </a>`;
-            }
-        }
-
         if (theme.boardName)
             params["boardname"] = html2Quote(theme.boardName);
         if (theme.boardNickname)
@@ -270,7 +259,7 @@ namespace pxt.docs {
             params["homeurl"] = html2Quote(theme.homeUrl);
         params["targetid"] = theme.id || "???";
         params["targetname"] = theme.name || "Microsoft MakeCode";
-        params["targetlogo"] = theme.docsLogo ? `<img aria-hidden="true" role="presentation" class="ui mini image" src="${theme.docsLogo}" />` : ""
+        params["targetlogo"] = theme.docsLogo ? `<img aria-hidden="true" role="presentation" class="ui ${theme.logoWide ? "small" : "mini"} image" src="${theme.docsLogo}" />` : ""
         let ghURLs = d.ghEditURLs || []
         if (ghURLs.length) {
             let ghText = `<p style="margin-top:1em">\n`
@@ -324,6 +313,7 @@ namespace pxt.docs {
 .ui.inverted.accent { background: ${theme.accentColor}; }
 `
         params["targetstyle"] = style;
+        params["tocclass"] = theme.lightToc ? "lighttoc" : "inverted";
 
         for (let k of Object.keys(theme)) {
             let v = (theme as any)[k]
@@ -348,6 +338,14 @@ namespace pxt.docs {
             "searchBar1",
             "searchBar2"
         ])
+
+        // Normalize any path URL with any version path in the current URL
+        function normalizeUrl(href: string) {
+            if (!href) return href;
+            const relative = href.indexOf('/') == 0;
+            if (relative && d.versionPath) href = `/${d.versionPath}${href}`;
+            return href;
+        }
     }
 
     export interface RenderOptions {
@@ -361,6 +359,37 @@ namespace pxt.docs {
         ghEditURLs?: string[];
         repo?: { name: string; fullName: string; tag?: string };
         throwOnError?: boolean; // check for missing macros
+        TOC?: TOCMenuEntry[]; // TOC parsed here
+    }
+
+    export function setupRenderer(renderer: marked.Renderer) {
+        renderer.image = function (href: string, title: string, text: string) {
+            let out = '<img class="ui centered image" src="' + href + '" alt="' + text + '"';
+            if (title) {
+                out += ' title="' + title + '"';
+            }
+            out += (this as any).options.xhtml ? '/>' : '>';
+            return out;
+        }
+        renderer.listitem = function (text: string): string {
+            const m = /^\s*\[( |x)\]/i.exec(text);
+            if (m) return `<li class="${m[1] == ' ' ? 'unchecked' : 'checked'}">` + text.slice(m[0].length) + '</li>\n'
+            return '<li>' + text + '</li>\n';
+        }
+        renderer.heading = function (text: string, level: number, raw: string) {
+            let m = /(.*)#([\w\-]+)\s*$/.exec(text)
+            let id = ""
+            if (m) {
+                text = m[1]
+                id = m[2]
+            } else {
+                id = raw.toLowerCase().replace(/[^\w]+/g, '-')
+            }
+            // remove tutorial macros
+            if (text)
+                text = text.replace(/@(fullscreen|unplugged)/g, '');
+            return `<h${level} id="${(this as any).options.headerPrefix}${id}">${text}</h${level}>`
+        }
     }
 
     export function renderMarkdown(opts: RenderOptions): string {
@@ -420,55 +449,35 @@ namespace pxt.docs {
             versionPath: opts.versionPath,
             ghEditURLs: opts.ghEditURLs,
             params: pubinfo,
+            TOC: opts.TOC
         }
         prepTemplate(d)
 
         if (!markedInstance) {
             markedInstance = requireMarked();
-            let renderer = new markedInstance.Renderer()
-            renderer.image = function (href: string, title: string, text: string) {
-                let out = '<img class="ui centered image" src="' + href + '" alt="' + text + '"';
-                if (title) {
-                    out += ' title="' + title + '"';
-                }
-                out += this.options.xhtml ? '/>' : '>';
-                return out;
-            }
-            renderer.listitem = function (text: string): string {
-                const m = /^\s*\[( |x)\]/i.exec(text);
-                if (m) return `<li class="${m[1] == ' ' ? 'unchecked' : 'checked'}">` + text.slice(m[0].length) + '</li>\n'
-                return '<li>' + text + '</li>\n';
-            }
-            const linkRenderer = renderer.link;
-            renderer.link = function (href: string, title: string, text: string) {
-                const relative = href.indexOf('/') == 0;
-                const target = !relative ? '_blank' : '';
-                if (relative && d.versionPath) href = `/${d.versionPath}${href}`;
-                const html = linkRenderer.call(renderer, href, title, text);
-                return html.replace(/^<a /, `<a ${target ? `target="${target}"` : ''} rel="nofollow noopener" `);
-            }
-            renderer.heading = function (text: string, level: number, raw: string) {
-                let m = /(.*)#([\w\-]+)\s*$/.exec(text)
-                let id = ""
-                if (m) {
-                    text = m[1]
-                    id = m[2]
-                } else {
-                    id = raw.toLowerCase().replace(/[^\w]+/g, '-')
-                }
-                return `<h${level} id="${this.options.headerPrefix}${id}">${text}</h${level}>`
-            } as any
-            markedInstance.setOptions({
-                renderer: renderer,
-                gfm: true,
-                tables: true,
-                breaks: false,
-                pedantic: false,
-                sanitize: true,
-                smartLists: true,
-                smartypants: true
-            })
+        }
+
+        // We have to re-create the renderer every time to avoid the link() function's closure capturing the opts
+        let renderer = new markedInstance.Renderer()
+        setupRenderer(renderer);
+        const linkRenderer = renderer.link;
+        renderer.link = function (href: string, title: string, text: string) {
+            const relative = new RegExp('^[/#]').test(href);
+            const target = !relative ? '_blank' : '';
+            if (relative && d.versionPath) href = `/${d.versionPath}${href}`;
+            const html = linkRenderer.call(renderer, href, title, text);
+            return html.replace(/^<a /, `<a ${target ? `target="${target}"` : ''} rel="nofollow noopener" `);
         };
+        markedInstance.setOptions({
+            renderer: renderer,
+            gfm: true,
+            tables: true,
+            breaks: false,
+            pedantic: false,
+            sanitize: true,
+            smartLists: true,
+            smartypants: true
+        });
 
         let markdown = opts.markdown
 
@@ -831,29 +840,6 @@ ${opts.repo.name.replace(/^pxt-/, '')}=github:${opts.repo.fullName}#${opts.repo.
 
         let TOC = dummy.subitems
         if (!TOC || TOC.length == 0) return null
-
-        let previousNode: pxt.TOCMenuEntry;
-        // Scan tree and build next / prev paths
-        let buildPrevNext = (node: pxt.TOCMenuEntry) => {
-            if (previousNode) {
-                node.prevName = previousNode.name;
-                node.prevPath = previousNode.path;
-
-                previousNode.nextName = node.name;
-                previousNode.nextPath = node.path;
-            }
-            if (node.path) {
-                previousNode = node;
-            }
-            node.subitems.forEach((tocItem, tocIndex) => {
-                buildPrevNext(tocItem);
-            })
-        }
-
-        TOC.forEach((tocItem, tocIndex) => {
-            buildPrevNext(tocItem)
-        })
-
         return TOC
     }
 

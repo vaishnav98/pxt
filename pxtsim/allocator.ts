@@ -202,7 +202,7 @@ namespace pxsim {
 
         private allocPartIRs(def: PartDefinition, name: string, bbFit: PartBBFit): PartIR[] {
             let partIRs: PartIR[] = [];
-            let mkIR = (def: PartDefinition, name: string, instPins?: PinTarget[], partParams?: Map<string>): PartIR => {
+            const mkIR = (def: PartDefinition, name: string, instPins?: PinTarget[], partParams?: Map<string>): PartIR => {
                 let pinIRs: PinIR[] = [];
                 for (let i = 0; i < def.numberOfPins; i++) {
                     let pinDef = def.pinDefinitions[i];
@@ -211,8 +211,10 @@ namespace pxsim {
                         pinTarget = <PinTarget>pinDef.target;
                     } else {
                         let instIdx = (<PinInstantiationIdx>pinDef.target).pinInstantiationIdx;
-                        U.assert(!!instPins && instPins[instIdx] !== undefined,
-                            `No pin found for PinInstantiationIdx: ${instIdx}. (Is the part missing an ArgumentRole or "trackArgs=" annotations?)`);
+                        if (!(!!instPins && instPins[instIdx] !== undefined)) {
+                            console.log(`error: parts no pin found for PinInstantiationIdx: ${instIdx}. (Is the part missing an ArgumentRole or "trackArgs=" annotations?)`);
+                            return undefined;
+                        }
                         pinTarget = instPins[instIdx];
                     }
                     let pinLoc = def.visual.pinLocations[i];
@@ -243,36 +245,48 @@ namespace pxsim {
                     bbFit: bbFit
                 };
             };
-            if (def.instantiation.kind === "singleton") {
-                partIRs.push(mkIR(def, name));
-            } else if (def.instantiation.kind === "function") {
-                let fnAlloc = def.instantiation as PartFunctionDefinition;
-                let fnNms = fnAlloc.fullyQualifiedName.split(',');
-                let callsitesTrackedArgsHash: { [index: string]: number } = {};
-                fnNms.forEach(fnNm => { if (this.opts.fnArgs[fnNm]) this.opts.fnArgs[fnNm].forEach((targetArg: string) => { callsitesTrackedArgsHash[targetArg] = 1 }); });
-                let callsitesTrackedArgs: string[] = Object.keys(callsitesTrackedArgsHash);
-                U.assert(!!callsitesTrackedArgs && !!callsitesTrackedArgs.length, "Failed to read pin(s) from callsite for: " + fnNms);
-                callsitesTrackedArgs.forEach(fnArgsStr => {
-                    let fnArgsSplit = fnArgsStr.split(",");
-                    U.assert(fnArgsSplit.length === fnAlloc.argumentRoles.length,
-                        `Mismatch between number of arguments at callsite (function name: ${fnNms}) vs number of argument roles in part definition (part: ${name}).`);
-                    let instPins: PinTarget[] = [];
-                    let paramArgs: Map<string> = {};
-                    fnArgsSplit.forEach((arg, idx) => {
-                        let role = fnAlloc.argumentRoles[idx];
-                        if (role.partParameter !== undefined) {
-                            paramArgs[role.partParameter] = arg;
+
+            // support for multiple possible instantions
+            const instantiations = def.instantiations || [];
+            if (def.instantiation) instantiations.push(def.instantiation)
+
+            instantiations.forEach(instantiation => {
+                if (instantiation.kind === "singleton") {
+                    partIRs.push(mkIR(def, name));
+                } else if (instantiation.kind === "function") {
+                    let fnAlloc = instantiation as PartFunctionDefinition;
+                    let fnNms = fnAlloc.fullyQualifiedName.split(',');
+                    let callsitesTrackedArgsHash: { [index: string]: number } = {};
+                    fnNms.forEach(fnNm => { if (this.opts.fnArgs[fnNm]) this.opts.fnArgs[fnNm].forEach((targetArg: string) => { callsitesTrackedArgsHash[targetArg] = 1 }); });
+                    let callsitesTrackedArgs: string[] = Object.keys(callsitesTrackedArgsHash);
+                    if (!(!!callsitesTrackedArgs && !!callsitesTrackedArgs.length)) {
+                        console.log(`error: parts failed to read pin(s) from callsite for: ${fnNms}`);
+                        return undefined;
+                    }
+                    callsitesTrackedArgs.forEach(fnArgsStr => {
+                        const fnArgsSplit = fnArgsStr.split(",");
+                        if (fnArgsSplit.length != fnAlloc.argumentRoles.length) {
+                            console.log(`error: parts mismatch between number of arguments at callsite (function name: ${fnNms}) vs number of argument roles in part definition (part: ${name}).`);
+                            return;
                         }
-                        if (role.pinInstantiationIdx !== undefined) {
-                            let instIdx = role.pinInstantiationIdx;
-                            let pin = readPin(arg);
-                            instPins[instIdx] = pin;
-                        }
+                        let instPins: PinTarget[] = [];
+                        let paramArgs: Map<string> = {};
+                        fnArgsSplit.forEach((arg, idx) => {
+                            let role = fnAlloc.argumentRoles[idx];
+                            if (role.partParameter !== undefined) {
+                                paramArgs[role.partParameter] = arg;
+                            }
+                            if (role.pinInstantiationIdx !== undefined) {
+                                let instIdx = role.pinInstantiationIdx;
+                                let pin = readPin(arg);
+                                instPins[instIdx] = pin;
+                            }
+                        });
+                        partIRs.push(mkIR(def, name, instPins, paramArgs));
                     });
-                    partIRs.push(mkIR(def, name, instPins, paramArgs));
-                });
-            }
-            return partIRs;
+                }
+            })
+            return partIRs.filter(ir => !!ir);
         }
         private computePartDimensions(def: PartDefinition, name: string): PartBBFit {
             let pinLocs = def.visual.pinLocations;
@@ -480,9 +494,11 @@ namespace pxsim {
                 //it must be a MicrobitPin
                 U.assert(typeof location === "string", "Unknown location type: " + location);
                 let mbPin = <MicrobitPin>location;
-                let boardPin = this.opts.boardDef.gpioPinMap[mbPin];
-                if (!boardPin) // this pin is internal
+                let boardPin = this.opts.boardDef.gpioPinMap[mbPin] || mbPin;
+                if (!boardPin) { // this pin is internal
+                    console.debug(`unknown pin location for ${mbPin}`)
                     return undefined;
+                }
                 return { type: "dalboard", pin: boardPin };
             }
         }
@@ -630,8 +646,6 @@ namespace pxsim {
                 .map(partName => { return { name: partName, def: this.opts.partDefs[partName] } })
                 .filter(d => !!d.def);
             if (partNmAndDefs.length > 0) {
-                let partNmsList = partNmAndDefs.map(p => p.name);
-                let partDefsList = partNmAndDefs.map(p => p.def);
                 let dimensions = partNmAndDefs.map(nmAndPart => this.computePartDimensions(nmAndPart.def, nmAndPart.name));
                 let partIRs: PartIR[] = [];
                 partNmAndDefs.forEach((nmAndDef, idx) => {
@@ -639,7 +653,6 @@ namespace pxsim {
                     let irs = this.allocPartIRs(nmAndDef.def, nmAndDef.name, dims);
                     partIRs = partIRs.concat(irs);
                 })
-                // TODO filter parts that are not representable now
                 const partPlacements = this.placeParts(partIRs);
                 const partsAndWireIRs = partPlacements.map(p => this.allocWireIRs(p));
                 const allWireIRs = partsAndWireIRs.map(p => p.wires).reduce((p, n) => p.concat(n), []);
@@ -667,8 +680,8 @@ namespace pxsim {
                         assembly: assembly
                     }
                 }).filter(p => !!p);
-                let all = [basicWires].concat(partsAndWires);
-
+                const all = [basicWires].concat(partsAndWires)
+                    .filter(pw => pw.assembly && pw.assembly.length); // only keep steps with something to do
                 // hide breadboard if not used
                 const requiresBreadboard = all.some(r =>
                     (r.part && r.part.breadboardConnections && r.part.breadboardConnections.length > 0)

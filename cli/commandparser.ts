@@ -12,6 +12,7 @@ export interface CommandFlag {
     type?: FlagType;
     aliases?: string[];
     possibleValues?: string[];
+    deprecated?: boolean;
 
 }
 
@@ -78,9 +79,8 @@ export class CommandParser {
         const flags: { [index: string]: string | boolean | number } = {};
 
         const filtered = this.commands.filter(c => c.name === name || c.aliases && c.aliases.indexOf(name) !== -1);
-        if (!filtered.length) {
-            throw new Error(`Command '${name}' not found`);
-        }
+        if (!filtered.length)
+            pxt.U.userError(`Command '${name}' not found, use "pxt help all" to see available commands.`);
 
         const command = filtered[0];
 
@@ -96,26 +96,25 @@ export class CommandParser {
 
         for (let i = 1; i < args.length; i++) {
             const match = argRegex.exec(args[i]);
-
             if (!match) {
                 continue;
             }
 
             if (match[1]) {
-                if (currentFlag) {
-                    throw new Error(`Expected value to follow flag '${currentFlag}'`);
-                }
+                if (currentFlag)
+                    pxt.U.userError(`Expected value to follow flag '${currentFlag}'`);
 
                 const flagName = command._aliasMap[match[2]];
-
-                if (!flagName) {
-                    if (match[2] == "debug" || match[2] == "d") {
-                        pxt.options.debug = true;
-                        pxt.debug = console.log;
+                const debugFlag = flagName || match[2];
+                if (debugFlag == "debug" || debugFlag == "d" || debugFlag == "dbg") {
+                    pxt.options.debug = true;
+                    pxt.debug = console.log;
+                    pxt.log(`debug mode`);
+                    if (!flagName)
                         continue;
-                    }
-                    throw new Error(`Unrecognized flag '${match[2]}' for command '${command.name}'`)
                 }
+                if (!flagName)
+                    pxt.U.userError(`Unrecognized flag '${match[2]}' for command '${command.name}'`)
 
                 const flagDefinition = command.flags[flagName];
 
@@ -129,7 +128,7 @@ export class CommandParser {
             }
             else if (currentFlag) {
                 if (currentFlagDef.possibleValues && currentFlagDef.possibleValues.length && currentFlagDef.possibleValues.indexOf(match[2]) === -1) {
-                    throw new Error(`Unknown value for flag '${currentFlag}', '${match[2]}'`);
+                    pxt.U.userError(`Unknown value for flag '${currentFlag}', '${match[2]}'`);
                 }
 
                 if (!currentFlagDef.type || currentFlagDef.type === "string") {
@@ -156,13 +155,13 @@ export class CommandParser {
         }
 
         if (currentFlag) {
-            throw new Error(`Expected value to follow flag '${currentFlag}'`)
+            pxt.U.userError(`Expected value to follow flag '${currentFlag}'`)
         }
         else if (!command.argString && parsedArgs.length) {
-            throw new Error(`Command '${command.name}' expected exactly 0 argument(s) but received ${parsedArgs.length}`);
+            pxt.U.userError(`Command '${command.name}' expected exactly 0 argument(s) but received ${parsedArgs.length}`);
         }
         else if (command.numArgs && parsedArgs.length !== command.numArgs) {
-            throw new Error(`Command '${command.name}' expected exactly ${command.numArgs} argument(s) but received ${parsedArgs.length}`);
+            pxt.U.userError(`Command '${command.name}' expected exactly ${command.numArgs} argument(s) but received ${parsedArgs.length}`);
         }
 
         return command._callback({
@@ -228,6 +227,7 @@ export class CommandParser {
         let maxWidth = 0;
         for (const flag in c.flags) {
             const def = c.flags[flag];
+            if (def.deprecated) continue;
             let usage = dash(flag);
             if (def.aliases && def.aliases.length) {
                 usage += " " + def.aliases.map(dash).join(" ");

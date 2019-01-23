@@ -120,6 +120,10 @@ namespace pxsim {
             return new RefCollection();
         }
 
+        export function isArray(c: any) {
+            return c instanceof RefCollection
+        }
+
         export function length(c: RefCollection) {
             pxtrt.nullCheck(c)
             return c.getLength();
@@ -192,40 +196,62 @@ namespace pxsim {
     }
 
     export namespace Math_ {
-        export function imul(x: number, y: number) {
-            return intMult(x, y)
-        }
+        // for explanations see:
+        // http://stackoverflow.com/questions/3428136/javascript-integer-math-incorrect-results (second answer)
+        // (but the code below doesn't come from there; I wrote it myself)
+        export const imul = Math.imul || function (a: number, b: number) {
+            const ah = (a >>> 16) & 0xffff;
+            const al = a & 0xffff;
+            const bh = (b >>> 16) & 0xffff;
+            const bl = b & 0xffff;
+            // the shift by 0 fixes the sign on the high part
+            // the final |0 converts the unsigned value into a signed value
+            return ((al * bl) + (((ah * bl + al * bh) << 16) >>> 0) | 0);
+        };
 
         export function idiv(x: number, y: number) {
             return (x / y) >> 0
         }
 
         export function round(n: number) { return Math.round(n) }
+        export function roundWithPrecision(x: number, digits: number): number {
+            digits = digits | 0;
+            // invalid digits input
+            if (digits <= 0) return Math.round(x);
+            if (x == 0) return 0;
+            let r = 0;
+            while (r == 0 && digits < 21) {
+                const d = Math.pow(10, digits++);
+                r = Math.round(x * d + Number.EPSILON) / d;
+            }
+            return r;
+        }
         export function ceil(n: number) { return Math.ceil(n) }
         export function floor(n: number) { return Math.floor(n) }
         export function sqrt(n: number) { return Math.sqrt(n) }
         export function pow(x: number, y: number) {
-            if (pxsim.floatingPoint)
-                return Math.pow(x, y)
-            else
-                return Math.pow(x, y) | 0
+            return Math.pow(x, y)
         }
+        export function clz32(n: number) { return Math.clz32(n) }
         export function log(n: number) { return Math.log(n) }
+        export function log10(n: number) { return Math.log10(n) }
+        export function log2(n: number) { return Math.log2(n) }
         export function exp(n: number) { return Math.exp(n) }
         export function sin(n: number) { return Math.sin(n) }
+        export function sinh(n: number) { return Math.sinh(n) }
         export function cos(n: number) { return Math.cos(n) }
+        export function cosh(n: number) { return Math.cosh(n) }
         export function tan(n: number) { return Math.tan(n) }
+        export function tanh(n: number) { return Math.tanh(n) }
         export function asin(n: number) { return Math.asin(n) }
+        export function asinh(n: number) { return Math.asinh(n) }
         export function acos(n: number) { return Math.acos(n) }
+        export function acosh(n: number) { return Math.acosh(n) }
         export function atan(n: number) { return Math.atan(n) }
+        export function atanh(x: number) { return Math.atanh(x) }
         export function atan2(y: number, x: number) { return Math.atan2(y, x) }
-        export function trunc(x: number) {
-            return x > 0 ? Math.floor(x) : Math.ceil(x);
-        }
-
-        export function random(): number {
-            return Math.random();
-        }
+        export function trunc(x: number) { return x > 0 ? Math.floor(x) : Math.ceil(x); }
+        export function random(): number { return Math.random(); }
         export function randomRange(min: number, max: number): number {
             if (min == max) return min;
             if (min > max) {
@@ -238,20 +264,6 @@ namespace pxsim {
             else
                 return min + Math.random() * (max - min);
         }
-    }
-
-    // for explanations see:
-    // http://stackoverflow.com/questions/3428136/javascript-integer-math-incorrect-results (second answer)
-    // (but the code below doesn't come from there; I wrote it myself)
-    // TODO use Math.imul if available
-    function intMult(a: number, b: number) {
-        const ah = (a >>> 16) & 0xffff;
-        const al = a & 0xffff;
-        const bh = (b >>> 16) & 0xffff;
-        const bl = b & 0xffff;
-        // the shift by 0 fixes the sign on the high part
-        // the final |0 converts the unsigned value into a signed value
-        return ((al * bl) + (((ah * bl + al * bh) << 16) >>> 0) | 0);
     }
 
     export namespace Number_ {
@@ -279,7 +291,7 @@ namespace pxsim {
         export function adds(x: number, y: number) { return (x + y) | 0; }
         export function subs(x: number, y: number) { return (x - y) | 0; }
         export function divs(x: number, y: number) { return Math.floor(x / y) | 0; }
-        export function muls(x: number, y: number) { return intMult(x, y); }
+        export function muls(x: number, y: number) { return Math_.imul(x, y); }
         export function ands(x: number, y: number) { return x & y; }
         export function orrs(x: number, y: number) { return x | y; }
         export function eors(x: number, y: number) { return x ^ y; }
@@ -298,7 +310,7 @@ namespace pxsim {
         export function adds(x: number, y: number) { return toInt(x + y); }
         export function subs(x: number, y: number) { return toInt(x - y); }
         export function divs(x: number, y: number) { return toInt(Math.floor(x / y)); }
-        export function muls(x: number, y: number) { return toInt(intMult(x, y)); }
+        export function muls(x: number, y: number) { return toInt(Math_.imul(x, y)); }
         export function ands(x: number, y: number) { return toInt(x & y); }
         export function orrs(x: number, y: number) { return toInt(x | y); }
         export function eors(x: number, y: number) { return toInt(x ^ y); }
@@ -311,6 +323,20 @@ namespace pxsim {
     }
 
     export namespace String_ {
+        export function stringConv(v: any) {
+            const cb = getResume();
+            if (v instanceof RefRecord) {
+                if (v.vtable.toStringMethod) {
+                    runtime.runFiberAsync(v.vtable.toStringMethod as any, v)
+                        .done(() => {
+                            cb(runtime.currFrame.retval + "")
+                        })
+                    return
+                }
+            }
+            cb(v + "")
+        }
+
         export function mkEmpty() {
             return ""
         }
@@ -320,7 +346,7 @@ namespace pxsim {
         }
 
         export function toNumber(s: string) {
-            return parseInt(s);
+            return parseFloat(s);
         }
 
         // TODO check edge-conditions
@@ -377,6 +403,24 @@ namespace pxsim {
         export function charCodeAt(s: string, i: number) {
             pxtrt.nullCheck(s)
             return inRange(s, i) ? s.charCodeAt(i) : 0;
+        }
+
+        export function indexOf(s: string, searchValue: string, start?: number) {
+            pxtrt.nullCheck(s);
+            if (searchValue == null) return -1;
+            return s.indexOf(searchValue, start);
+        }
+
+        export function lastIndexOf(s: string, searchValue: string, start?: number) {
+            pxtrt.nullCheck(s);
+            if (searchValue == null) return -1;
+            return s.lastIndexOf(searchValue, start);
+        }
+
+        export function includes(s: string, searchValue: string, start?: number) {
+            pxtrt.nullCheck(s);
+            if (searchValue == null) return false;
+            return s.includes(searchValue, start);
         }
     }
 

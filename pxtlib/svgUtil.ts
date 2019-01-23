@@ -22,6 +22,8 @@ namespace pxt.svgUtil {
         percent
     }
 
+    const XLINK_NAMESPACE = "http://www.w3.org/1999/xlink";
+
     export class BaseElement<T extends SVGElement> {
         el: T;
         protected titleElement: SVGTitleElement;
@@ -37,6 +39,11 @@ namespace pxt.svgUtil {
 
         setAttribute(name: string, value: string | number | boolean): this {
             this.el.setAttribute(name, value.toString());
+            return this;
+        }
+
+        setAttributeNS(ns: string, name: string, value: string | number | boolean): this {
+            this.el.setAttributeNS(ns, name, value.toString());
             return this;
         }
 
@@ -112,6 +119,36 @@ namespace pxt.svgUtil {
         appendChild<T extends SVGElement>(child: BaseElement<T>): void {
             this.el.appendChild(child.el);
         }
+
+        onDown(handler: PointerHandler): this {
+            events.down(this.el, handler);
+            return this;
+        }
+
+        onUp(handler: PointerHandler): this {
+            events.up(this.el, handler);
+            return this;
+        }
+
+        onMove(handler: PointerHandler): this {
+            events.move(this.el, handler);
+            return this;
+        }
+
+        onEnter(handler: (isDown: boolean) => void): this {
+            events.enter(this.el, handler);
+            return this;
+        }
+
+        onLeave(handler: PointerHandler): this {
+            events.leave(this.el, handler);
+            return this;
+        }
+
+        onClick(handler: PointerHandler): this {
+            events.click(this.el, handler);
+            return this;
+        }
     }
 
     export class SVG extends DrawContext<SVGSVGElement> {
@@ -155,6 +192,14 @@ namespace pxt.svgUtil {
             return this.updateTransform();
         }
 
+        def() {
+            return new DefsElement(this.el);
+        }
+
+        style() {
+            return new StyleElement(this.el);
+        }
+
         private updateTransform(): this {
             let transform = "";
             if (this.left != undefined) {
@@ -189,7 +234,7 @@ namespace pxt.svgUtil {
     }
 
     export class DefsElement extends BaseElement<SVGDefsElement> {
-        constructor(parent: SVGSVGElement) {
+        constructor(parent: SVGElement) {
             super("defs");
             parent.appendChild(this.el);
         }
@@ -198,6 +243,7 @@ namespace pxt.svgUtil {
         create(type: "pattern", id: string): Pattern;
         create(type: "radialGradient", id: string): RadialGradient;
         create(type: "linearGradient", id: string): LinearGradient;
+        create(type: "clipPath", id: string): ClipPath;
         create(type: string, id: string): BaseElement<any> {
             let el: BaseElement<SVGElement>;
             switch (type) {
@@ -205,11 +251,23 @@ namespace pxt.svgUtil {
                 case "pattern": el = new Pattern(); break;
                 case "radialGradient": el = new RadialGradient(); break;
                 case "linearGradient": el = new LinearGradient(); break;
+                case "clipPath": el = new ClipPath(); break;
                 default: el = new BaseElement(type);
             }
             el.id(id);
             this.el.appendChild(el.el);
             return el;
+        }
+    }
+
+    export class StyleElement extends BaseElement<SVGStyleElement> {
+        constructor(parent: SVGElement) {
+            super("style");
+            parent.appendChild(this.el);
+        }
+
+        content(css: string) {
+            this.el.textContent = css;
         }
     }
 
@@ -252,34 +310,8 @@ namespace pxt.svgUtil {
             return this.setAttribute("stroke-opacity", opacity);
         }
 
-        onDown(handler: PointerHandler): this {
-            events.down(this.el, handler);
-            return this;
-        }
-
-        onUp(handler: PointerHandler): this {
-            events.up(this.el, handler);
-            return this;
-        }
-
-        onMove(handler: PointerHandler): this {
-            events.move(this.el, handler);
-            return this;
-        }
-
-        onEnter(handler: (isDown: boolean) => void): this {
-            events.enter(this.el, handler);
-            return this;
-        }
-
-        onLeave(handler: PointerHandler): this {
-            events.leave(this.el, handler);
-            return this;
-        }
-
-        onClick(handler: PointerHandler): this {
-            events.click(this.el, handler);
-            return this;
+        clipPath(url: string): this {
+            return this.setAttribute("clip-path", url);
         }
     }
 
@@ -445,7 +477,7 @@ namespace pxt.svgUtil {
         constructor() { super("image") }
 
         src(url: string) {
-            return this.setAttribute("href", url);
+            return this.setAttributeNS(XLINK_NAMESPACE, "href", url);
         }
 
         width(width: number, unit = LengthUnit.px): this {
@@ -521,6 +553,19 @@ namespace pxt.svgUtil {
         }
     }
 
+    export class ClipPath extends DrawContext<SVGClipPathElement> {
+        constructor() { super("clipPath") }
+
+        clipPathUnits(objectBoundingBox: boolean) {
+            if (objectBoundingBox) {
+                return this.setAttribute("clipPathUnits", "objectBoundingBox");
+            }
+            else {
+                return this.setAttribute("clipPathUnits", "userSpaceOnUse");
+            }
+        }
+    }
+
     function elt(type: string): SVGElement {
         let el = document.createElementNS("http://www.w3.org/2000/svg", type);
         return el;
@@ -546,7 +591,7 @@ namespace pxt.svgUtil {
         }
     }
 
-    export type OperatorSymbol = "m" | "M" | "l" | "L" | "c" | "C" | "q" | "Q" | "T" | "t" | "S" | "s" | "z" | "Z" | "A";
+    export type OperatorSymbol = "m" | "M" | "l" | "L" | "c" | "C" | "q" | "Q" | "T" | "t" | "S" | "s" | "z" | "Z" | "A" | "a";
     export interface PathOp {
         op: OperatorSymbol;
         args: number[];
@@ -608,6 +653,10 @@ namespace pxt.svgUtil {
 
         arcTo(rx: number, ry: number, xRotate: number, large: boolean, sweepClockwise: boolean, x: number, y: number): this {
             return this.op("A", rx, ry, xRotate, large ? 1 : 0, sweepClockwise ? 1 : 0, x, y);
+        }
+
+        arcBy(rx: number, ry: number, xRotate: number, large: boolean, sweepClockwise: boolean, x: number, y: number): this {
+            return this.op("a", rx, ry, xRotate, large ? 1 : 0, sweepClockwise ? 1 : 0, x, y);
         }
 
         close(): this {

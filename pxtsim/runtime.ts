@@ -1,6 +1,7 @@
 /// <reference path="../localtypings/pxtparts.d.ts"/>
 
 namespace pxsim {
+    const MIN_MESSAGE_WAIT_MS = 200;
     export namespace U {
         export function addClass(element: HTMLElement, classes: string) {
             if (!element) return;
@@ -62,6 +63,21 @@ namespace pxsim {
             return Date.now();
         }
 
+        let perf: () => number
+
+        // current time in microseconds
+        export function perfNowUs(): number {
+            if (!perf)
+                perf = typeof performance != "undefined" ?
+                    performance.now.bind(performance) ||
+                    (performance as any).moznow.bind(performance) ||
+                    (performance as any).msNow.bind(performance) ||
+                    (performance as any).webkitNow.bind(performance) ||
+                    (performance as any).oNow.bind(performance) :
+                    Date.now;
+            return perf() * 1000;
+        }
+
         export function nextTick(f: () => void) {
             (<any>Promise)._async._schedule(f)
         }
@@ -96,15 +112,33 @@ namespace pxsim {
         finalCallback?: ResumeFn;
     }
 
+    interface SerialMessage {
+        data: string;
+        time: number;
+    }
+
     export let runtime: Runtime;
     export function getResume() { return runtime.getResume() }
+
+    export type MessageListener = (msg: SimulatorMessage) => void;
 
     const SERIAL_BUFFER_LENGTH = 16;
     export class BaseBoard {
         public runOptions: SimulatorRunMessage;
+        public messageListeners: MessageListener[] = [];
 
         public updateView() { }
-        public receiveMessage(msg: SimulatorMessage) { }
+        public receiveMessage(msg: SimulatorMessage) {
+            this.dispatchMessage(msg);
+        }
+        private dispatchMessage(msg: SimulatorMessage) {
+            for (const listener of this.messageListeners)
+                listener(msg)
+        }
+        public addMessageListener(listener: MessageListener) {
+            this.messageListeners.push(listener);
+        }
+
         public initAsync(msg: SimulatorRunMessage): Promise<void> {
             this.runOptions = msg;
             return Promise.resolve()
@@ -112,18 +146,39 @@ namespace pxsim {
         public kill() { }
 
         protected serialOutBuffer: string = '';
-        public writeSerial(s: string) {
-            if (!s) return
+        private messages: SerialMessage[] = [];
+        private serialTimeout: number;
+        private lastSerialTime = 0;
 
+        public writeSerial(s: string) {
             this.serialOutBuffer += s;
             if (/\n/.test(this.serialOutBuffer) || this.serialOutBuffer.length > SERIAL_BUFFER_LENGTH) {
-                Runtime.postMessage(<SimulatorSerialMessage>{
-                    type: 'serial',
-                    data: this.serialOutBuffer,
-                    id: runtime.id,
-                    sim: true
-                })
+                this.messages.push({
+                    time: Date.now(),
+                    data: this.serialOutBuffer
+                });
+                this.debouncedPostAll();
                 this.serialOutBuffer = '';
+            }
+        }
+
+        private debouncedPostAll = () => {
+            const nowtime = Date.now();
+            if (nowtime - this.lastSerialTime > MIN_MESSAGE_WAIT_MS) {
+                clearTimeout(this.serialTimeout);
+                if (this.messages.length) {
+                    Runtime.postMessage(<any>{
+                        type: 'bulkserial',
+                        data: this.messages,
+                        id: runtime.id,
+                        sim: true
+                    })
+                    this.messages = [];
+                    this.lastSerialTime = nowtime;
+                }
+            }
+            else {
+                this.serialTimeout = setTimeout(this.debouncedPostAll, 50);
             }
         }
     }
@@ -160,7 +215,7 @@ namespace pxsim {
 
         kill() {
             super.kill();
-            AudioContextManager.stop();
+            AudioContextManager.stopAll();
         }
     }
 
@@ -196,11 +251,11 @@ namespace pxsim {
         events: T[] = [];
         private awaiters: ((v?: any) => void)[] = [];
         private lock: boolean;
-        private _handler: RefAction;
+        private _handlers: RefAction[] = [];
 
         constructor(public runtime: Runtime, private valueToArgs?: EventValueToActionArgs<T>) { }
 
-        public push(e: T, notifyOne: boolean) {
+        public push(e: T, notifyOne: boolean): Promise<void> {
             if (this.awaiters.length > 0) {
                 if (notifyOne) {
                     const aw = this.awaiters.shift();
@@ -211,43 +266,61 @@ namespace pxsim {
                     aws.forEach(aw => aw());
                 }
             }
-            if (!this.handler || this.events.length > this.max) return;
+            if (this.handlers.length == 0 || this.events.length > this.max)
+                return Promise.resolve()
 
             this.events.push(e)
 
             // if this is the first event pushed - start processing
             if (this.events.length == 1 && !this.lock)
-                this.poke();
+                return this.poke();
+            else
+                return Promise.resolve()
         }
 
-        private poke() {
+        private poke(): Promise<void> {
             this.lock = true;
-            const value = this.events.shift();
-            this.runtime.runFiberAsync(this.handler, ...(this.valueToArgs ? this.valueToArgs(value) : [value]))
-                .done(() => {
-                    // we're done processing the current event, if there is still something left to do, do it
-                    if (this.events.length > 0) {
-                        this.poke();
-                    }
-                    else {
-                        this.lock = false;
-                    }
+            let ret = Promise.each(this.events, (value) => {
+                return Promise.each(this.handlers, (handler) => {
+                    return this.runtime.runFiberAsync(handler, ...(this.valueToArgs ? this.valueToArgs(value) : [value]))
                 })
+            }).then(() => {
+                // if some events arrived while processing above
+                // then keep processing
+                if (this.events.length > 0) {
+                    return this.poke()
+                } else {
+                    this.lock = false
+                    return Promise.resolve()
+                }
+            })
+            // all events will be processed by above code, so
+            // start afresh
+            this.events = []
+            return ret
         }
 
-        get handler() {
-            return this._handler;
+        get handlers() {
+            return this._handlers;
         }
 
-        set handler(a: RefAction) {
-            if (this._handler) {
-                pxtcore.decr(this._handler);
-            }
+        addHandler(a: RefAction) {
+            this._handlers.push(a);
+            pxtcore.incr(a)
+        }
 
-            this._handler = a;
+        setHandler(a: RefAction) {
+            this._handlers.forEach(old => pxtcore.decr(old))
+            this._handlers = [a];
+            pxtcore.incr(a)
+        }
 
-            if (this._handler) {
-                pxtcore.incr(this._handler);
+        removeHandler(a: RefAction) {
+            let index = this._handlers.indexOf(a)
+            while (index != -1) {
+                this._handlers.splice(index, 1)
+                pxtcore.decr(a)
+                index = this._handlers.indexOf(a)
             }
         }
 
@@ -270,7 +343,7 @@ namespace pxsim {
 
     // wraps simulator code as STS code - useful for default event handlers
     export function syntheticRefAction(f: (s: StackFrame) => any) {
-        return pxtcore.mkAction(0, 0, s => _leave(s, f(s)))
+        return pxtcore.mkAction(0, s => _leave(s, f(s)))
     }
 
     export class Runtime {
@@ -283,12 +356,18 @@ namespace pxsim {
         dead = false;
         running = false;
         startTime = 0;
+        startTimeUs = 0;
         id: string;
         globals: any = {};
         currFrame: StackFrame;
         entry: LabelFn;
         loopLock: Object = null;
         loopLockWaitList: (() => void)[] = [];
+
+        perfCounters: PerfCounter[]
+        perfOffset = 0
+        perfElapsed = 0
+        perfStack = 0
 
         public refCountingDebug = false;
         public refCounting = true;
@@ -318,13 +397,17 @@ namespace pxsim {
             return U.now() - this.startTime;
         }
 
+        runningTimeUs(): number {
+            return 0xffffffff & ((U.perfNowUs() - this.startTimeUs) >> 0);
+        }
+
         runFiberAsync(a: RefAction, arg0?: any, arg1?: any, arg2?: any) {
             incr(a)
             return new Promise<any>((resolve, reject) =>
                 U.nextTick(() => {
                     runtime = this;
                     this.setupTop(resolve)
-                    pxtcore.runAction3(a, arg0, arg1, arg2)
+                    pxtcore.runAction(a, [arg0, arg1, arg2])
                     decr(a) // if it's still running, action.run() has taken care of incrementing the counter
                 }))
         }
@@ -338,6 +421,16 @@ namespace pxsim {
                 window.parent.postMessage(data, "*");
             }
             if (Runtime.messagePosted) Runtime.messagePosted(data);
+        }
+
+        restart() {
+            this.kill();
+            setTimeout(() =>
+                pxsim.Runtime.postMessage(<pxsim.SimulatorCommandMessage>{
+                    type: "simulator",
+                    command: "restart"
+                }), 500);
+
         }
 
         kill() {
@@ -367,6 +460,7 @@ namespace pxsim {
                 this.running = r;
                 if (this.running) {
                     this.startTime = U.now();
+                    this.startTimeUs = U.perfNowUs();
                     Runtime.postMessage(<SimulatorStateMessage>{ type: 'status', runtimeid: this.id, state: 'running' });
                 } else {
                     Runtime.postMessage(<SimulatorStateMessage>{ type: 'status', runtimeid: this.id, state: 'killed' });
@@ -457,7 +551,8 @@ namespace pxsim {
 
             function setupDebugger(numBreakpoints: number) {
                 breakpoints = new Uint8Array(numBreakpoints)
-                breakAlways = true
+                // start running and let user put a breakpoint on start
+                // breakAlways = true
             }
 
             function isBreakFrame(s: StackFrame) {
@@ -575,6 +670,7 @@ namespace pxsim {
                     return
                 }
                 U.assert(!__this.loopLock)
+                __this.perfStartRuntime()
                 try {
                     runtime = __this
                     while (!!p) {
@@ -586,7 +682,9 @@ namespace pxsim {
                         if (__this.currFrame.overwrittenPC)
                             p = __this.currFrame
                     }
+                    __this.perfStopRuntime()
                 } catch (e) {
+                    __this.perfStopRuntime()
                     if (__this.errorHandler)
                         __this.errorHandler(e)
                     else {
@@ -655,6 +753,26 @@ namespace pxsim {
                 currResume = buildResume(s, retPC)
             }
 
+            function setupLambda(s: StackFrame, a: RefAction | LabelFn) {
+                if (a instanceof RefAction) {
+                    s.fn = a.func
+                    s.caps = a.fields
+                } else {
+                    s.fn = a
+                }
+            }
+
+            function checkSubtype(v: RefRecord, low: number, high: number) {
+                return v && v.vtable && low <= v.vtable.classNo && v.vtable.classNo <= high;
+            }
+
+            function failedCast(v: any) {
+                // TODO generate the right panic codes
+                if ((pxsim as any).control && (pxsim as any).control.dmesgValue)
+                    (pxsim as any).control.dmesgValue(v)
+                oops("failed cast on " + v)
+            }
+
             function buildResume(s: StackFrame, retPC: number) {
                 if (currResume) oops("already has resume")
                 s.pc = retPC;
@@ -675,7 +793,7 @@ namespace pxsim {
                         let frame: StackFrame = {
                             parent: s,
                             fn: w.func,
-                            lambdaArgs: [w.a0, w.a1, w.a2],
+                            lambdaArgs: w.args,
                             pc: 0,
                             caps: w.caps,
                             depth: s.depth + 1,
@@ -723,5 +841,63 @@ namespace pxsim {
 
             initCurrentRuntime(msg);
         }
+
+        public setupPerfCounters(names: string[]) {
+            if (!names || !names.length)
+                return
+            this.perfCounters = names.map(s => new PerfCounter(s))
+        }
+
+        private perfStartRuntime() {
+            if (this.perfOffset !== 0) {
+                this.perfStack++
+            } else {
+                this.perfOffset = U.perfNowUs() - this.perfElapsed
+            }
+        }
+
+        private perfStopRuntime() {
+            if (this.perfStack) {
+                this.perfStack--
+            } else {
+                this.perfElapsed = this.perfNow()
+                this.perfOffset = 0
+            }
+        }
+
+        public perfNow() {
+            if (this.perfOffset === 0)
+                U.userError("bad time now")
+            return (U.perfNowUs() - this.perfOffset) | 0
+        }
+
+        public startPerfCounter(n: number) {
+            if (!this.perfCounters)
+                return
+            const c = this.perfCounters[n]
+            if (c.start) U.userError("startPerf")
+            c.start = this.perfNow()
+        }
+
+        public stopPerfCounter(n: number) {
+            if (!this.perfCounters)
+                return
+            const c = this.perfCounters[n]
+            if (!c.start) U.userError("stopPerf")
+            c.value += this.perfNow() - c.start;
+            c.start = 0;
+            c.numstops++;
+        }
     }
+
+
+    export class PerfCounter {
+        start = 0;
+        numstops = 0;
+        value = 0;
+        constructor(public name: string) { }
+    }
+
+
+
 }

@@ -23,7 +23,7 @@ namespace pxt.runner {
         package?: string;
         showEdit?: boolean;
         showJavaScript?: boolean; // default is to show blocks first
-        downloadScreenshots?: boolean
+        split?: boolean; // split in multiple divs if too big
     }
 
     export interface WidgetOptions {
@@ -59,7 +59,7 @@ namespace pxt.runner {
         let images = cdn + "images"
         let $h = $('<div class="ui bottom attached tabular icon small compact menu hideprint">'
             + ' <div class="right icon menu"></div></div>');
-        let $c = $('<div class="ui top attached segment nobreak"></div>');
+        let $c = $('<div class="ui top attached segment codewidget"></div>');
         let $menu = $h.find('.right.menu');
 
         const theme = pxt.appTarget.appTheme || {};
@@ -135,22 +135,33 @@ namespace pxt.runner {
 
         // inject container
         $container.replaceWith(r as any);
+    }
 
-        // download screenshots
-        if (options.downloadScreenshots && woptions.hexname) {
-            pxt.debug("Downloading screenshot for: " + woptions.hexname);
-            let filename = woptions.hexname.substr(0, woptions.hexname.lastIndexOf('.'));
-            let fontSize = window.getComputedStyle($svg.get(0).getElementsByClassName("blocklyText").item(0)).getPropertyValue("font-size");
-            let svgElement = $svg.get(0) as any;
-            let bbox = $svg.get(0).getBoundingClientRect();
-            pxt.blocks.layout.svgToPngAsync(svgElement, 0, 0, bbox.width, bbox.height, 4)
-                .done(uri => {
-                    if (uri)
-                        BrowserUtils.browserDownloadDataUri(
-                            uri,
-                            (name || `${pxt.appTarget.nickname || pxt.appTarget.id}-${filename}`) + ".png");
-                });
-        }
+    let renderQueue: {
+        el: JQuery;
+        source: string;
+        options: blocks.BlocksRenderOptions;
+        render: (container: JQuery, r: pxt.runner.DecompileResult) => void;
+    }[] = [];
+    function consumeRenderQueueAsync(): Promise<void> {
+        const job = renderQueue.shift();
+        if (!job) return Promise.resolve(); // done
+
+        const { el, options, render } = job;
+        return pxt.runner.decompileToBlocksAsync(el.text(), options)
+            .then((r) => {
+                const errors = r.compileJS && r.compileJS.diagnostics && r.compileJS.diagnostics.filter(d => d.category == pxtc.DiagnosticCategory.Error);
+                if (errors && errors.length)
+                    errors.forEach(diag => pxt.reportError("docs.decompile", "" + diag.messageText, { "code": diag.code + "" }));
+                render(el, r);
+                el.removeClass("lang-shadow");
+                return consumeRenderQueueAsync();
+            }).catch(e => {
+                pxt.reportException(e);
+                el.append($('<div/>').addClass("ui segment warning").text(e.message));
+                el.removeClass("lang-shadow");
+                return consumeRenderQueueAsync();
+            });
     }
 
     function renderNextSnippetAsync(cls: string,
@@ -161,20 +172,14 @@ namespace pxt.runner {
         let $el = $("." + cls).first();
         if (!$el[0]) return Promise.resolve();
 
-        if (!options.emPixels) options.emPixels = 14;
-        if (!options.layout) options.layout = pxt.blocks.BlockLayout.Flow;
+        if (!options.emPixels) options.emPixels = 18;
+        if (!options.layout) options.layout = pxt.blocks.BlockLayout.Align;
+        options.splitSvg = true;
 
-        return pxt.runner.decompileToBlocksAsync($el.text(), options)
-            .then((r) => {
-                try {
-                    render($el, r);
-                } catch (e) {
-                    console.error('error while rendering ' + $el.html())
-                    $el.append($('<div/>').addClass("ui segment warning").text(e.message));
-                }
-                $el.removeClass(cls);
-                return Promise.delay(1, renderNextSnippetAsync(cls, render, options));
-            })
+        renderQueue.push({ el: $el, source: $el.text(), options, render });
+        $el.addClass("lang-shadow");
+        $el.removeClass(cls);
+        return renderNextSnippetAsync(cls, render, options);
     }
 
     function renderSnippetsAsync(options: ClientRenderOptions): Promise<void> {
@@ -183,7 +188,7 @@ namespace pxt.runner {
             return renderNextSnippetAsync(options.snippetClass, (c, r) => {
                 const s = r.blocksSvg;
                 if (options.snippetReplaceParent) c = c.parent();
-                const segment = $('<div class="ui segment"/>').append(s);
+                const segment = $('<div class="ui segment codewidget"/>').append(s);
                 c.replaceWith(segment);
             }, { package: options.package, snippetMode: false, aspectRatio: options.blocksAspectRatio });
         }
@@ -223,9 +228,9 @@ namespace pxt.runner {
 
     function renderSignaturesAsync(options: ClientRenderOptions): Promise<void> {
         return renderNextSnippetAsync(options.signatureClass, (c, r) => {
-            let cjs = r.compileJS;
+            let cjs = r.compileProgram;
             if (!cjs) return;
-            let file = r.compileJS.ast.getSourceFile("main.ts");
+            let file = cjs.getSourceFile("main.ts");
             let info = decompileCallInfo(file.statements[0]);
             if (!info || !r.apiInfo) return;
             const symbolInfo = r.apiInfo.byQName[info.qName];
@@ -233,7 +238,7 @@ namespace pxt.runner {
             let block = Blockly.Blocks[symbolInfo.attributes.blockId];
             let xml = block && block.codeCard ? block.codeCard.blocksXml : undefined;
 
-            let s = xml ? $(pxt.blocks.render(xml)) : r.compileBlocks && r.compileBlocks.success ? $(r.blocksSvg) : undefined;
+            const s = xml ? $(pxt.blocks.render(xml)) : r.compileBlocks && r.compileBlocks.success ? $(r.blocksSvg) : undefined;
             let sig = info.decl.getText().replace(/^export/, '');
             sig = sig.slice(0, sig.indexOf('{')).trim() + ';';
             let js = $('<code class="lang-typescript highlight"/>').text(sig);
@@ -246,7 +251,7 @@ namespace pxt.runner {
         return renderNextSnippetAsync(options.blocksClass, (c, r) => {
             const s = r.blocksSvg;
             if (options.snippetReplaceParent) c = c.parent();
-            const segment = $('<div class="ui segment"/>').append(s);
+            const segment = $('<div class="ui segment codewidget"/>').append(s);
             c.replaceWith(segment);
         }, { package: options.package, snippetMode: true, aspectRatio: options.blocksAspectRatio });
     }
@@ -260,13 +265,14 @@ namespace pxt.runner {
             let $el = $("." + cls).first();
             if (!$el[0]) return Promise.resolve();
 
-            if (!options.emPixels) options.emPixels = 14;
+            if (!options.emPixels) options.emPixels = 18;
+            options.splitSvg = true;
             return pxt.runner.compileBlocksAsync($el.text(), options)
                 .then((r) => {
                     try {
                         render($el, r);
                     } catch (e) {
-                        console.error('error while rendering ' + $el.html())
+                        pxt.reportException(e)
                         $el.append($('<div/>').addClass("ui segment warning").text(e.message));
                     }
                     $el.removeClass(cls);
@@ -277,7 +283,7 @@ namespace pxt.runner {
         return renderNextXmlAsync(cls, (c, r) => {
             const s = r.blocksSvg;
             if (opts.snippetReplaceParent) c = c.parent();
-            const segment = $('<div class="ui segment"/>').append(s);
+            const segment = $('<div class="ui segment codewidget"/>').append(s);
             c.replaceWith(segment);
         }, { package: opts.package, snippetMode: true, aspectRatio: opts.blocksAspectRatio });
     }
@@ -303,7 +309,7 @@ namespace pxt.runner {
                     nsStyleBuffer += `
                         span.docs.${ns.toLowerCase()} {
                             background-color: ${color} !important;
-                            border-color: ${pxt.toolbox.fadeColor(color, 0.2, true)} !important;
+                            border-color: ${pxt.toolbox.fadeColor(color, 0.1, false)} !important;
                         }
                     `;
                 })
@@ -311,11 +317,11 @@ namespace pxt.runner {
             })
             .then((nsStyleBuffer) => {
                 Object.keys(pxt.toolbox.blockColors).forEach((ns) => {
-                    const color = pxt.toolbox.blockColors[ns] as string;
+                    const color = pxt.toolbox.getNamespaceColor(ns);
                     nsStyleBuffer += `
                         span.docs.${ns.toLowerCase()} {
                             background-color: ${color} !important;
-                            border-color: ${pxt.toolbox.fadeColor(color, 0.2, true)} !important;
+                            border-color: ${pxt.toolbox.fadeColor(color, 0.1, false)} !important;
                         }
                     `;
                 })
@@ -361,7 +367,7 @@ namespace pxt.runner {
                 .then(r => {
                     if (r.blocksSvg) {
                         let $newel = $('<span class="block"/>').append(r.blocksSvg);
-                        const file = r.compileJS.ast.getSourceFile("main.ts");
+                        const file = r.compileProgram.getSourceFile("main.ts");
                         const stmt = file.statements[0];
                         const info = decompileCallInfo(stmt);
                         if (info && r.apiInfo) {
@@ -411,14 +417,18 @@ namespace pxt.runner {
 
     function renderLinksAsync(options: ClientRenderOptions, cls: string, replaceParent: boolean, ns: boolean): Promise<void> {
         return renderNextSnippetAsync(cls, (c, r) => {
-            const cjs = r.compileJS;
+            const cjs = r.compileProgram;
             if (!cjs) return;
-            const file = r.compileJS.ast.getSourceFile("main.ts");
-            const stmts = file.statements.slice(0).reverse();
+            const file = cjs.getSourceFile("main.ts");
+            const stmts = file.statements.slice(0);
             const ul = $('<div />').addClass('ui cards');
             ul.attr("role", "listbox");
             const addItem = (card: pxt.CodeCard) => {
                 if (!card) return;
+                const mC = /^\/(v\d+)/.exec(card.url);
+                const mP = /^\/(v\d+)/.exec(window.location.pathname);
+                const inEditor = /#doc/i.test(window.location.href);
+                if (card.url && !mC && mP && !inEditor) card.url = `/${mP[1]}/${card.url}`;
                 ul.append(pxt.docs.codeCard.render(card, { hideHeader: true, shortName: true }));
             }
             stmts.forEach(stmt => {
@@ -549,6 +559,11 @@ namespace pxt.runner {
             cd.className = "ui cards";
             cd.setAttribute("role", "listbox")
             cards.forEach(card => {
+                // patch card url with version if necessary, we don't do this in the editor because that goes through the backend and passes the targetVersion then
+                const mC = /^\/(v\d+)/.exec(card.url);
+                const mP = /^\/(v\d+)/.exec(window.location.pathname);
+                const inEditor = /#doc/i.test(window.location.href);
+                if (card.url && !mC && mP && !inEditor) card.url = `/${mP[1]}${card.url}`;
                 const cardEl = pxt.docs.codeCard.render(card, options);
                 cd.appendChild(cardEl)
                 // automitcally display package icon for approved packages
@@ -572,6 +587,7 @@ namespace pxt.runner {
                             })
                             .catch(e => {
                                 // swallow
+                                pxt.reportException(e);
                                 pxt.debug(`failed to load repo ${card.url}`)
                             })
                     }
@@ -596,7 +612,7 @@ namespace pxt.runner {
             if (!Array.isArray(js)) js = [js];
             cards = js as pxt.CodeCard[];
         } catch (e) {
-            console.error('error while rendering ' + $el.html())
+            pxt.reportException(e);
             $el.append($('<div/>').addClass("ui segment warning").text(e.messageText));
         }
 
@@ -624,6 +640,11 @@ namespace pxt.runner {
             if (options.snippetReplaceParent) $c = $c.parent();
             $c.remove();
         });
+        $('.lang-config').each((i, c) => {
+            let $c = $(c);
+            if (options.snippetReplaceParent) $c = $c.parent();
+            $c.remove();
+        })
     }
 
     function renderTypeScript(options?: ClientRenderOptions) {
@@ -650,12 +671,33 @@ namespace pxt.runner {
             $(e).removeClass('lang-typescript');
         });
         $('code.lang-typescript-ignore').each((i, e) => {
+            $(e).removeClass('lang-typescript-ignore');
+            $(e).addClass('lang-typescript');
             render(e, true);
-            $(e).removeClass('lang-typescript-ignore')
+            $(e).removeClass('lang-typescript');
+        });
+        $('code.lang-typescript-invalid').each((i, e) => {
+            $(e).removeClass('lang-typescript-invalid');
+            $(e).addClass('lang-typescript');
+            render(e, true);
+            $(e).removeClass('lang-typescript');
+            $(e).parent('div').addClass('invalid');
+            $(e).parent('div').prepend($("<i>", { "class": "icon ban" }));
+            $(e).addClass('invalid');
+        });
+        $('code.lang-typescript-valid').each((i, e) => {
+            $(e).removeClass('lang-typescript-valid');
+            $(e).addClass('lang-typescript');
+            render(e, true);
+            $(e).removeClass('lang-typescript');
+            $(e).parent('div').addClass('valid');
+            $(e).parent('div').prepend($("<i>", { "class": "icon check" }));
+            $(e).addClass('valid');
         });
     }
 
     export function renderAsync(options?: ClientRenderOptions): Promise<void> {
+        pxt.analytics.enable();
         if (!options) options = {}
         if (options.pxtUrl) options.pxtUrl = options.pxtUrl.replace(/\/$/, '');
         if (options.showEdit) options.showEdit = !pxt.BrowserUtils.isIFrame();
@@ -678,17 +720,19 @@ namespace pxt.runner {
             });
         }
 
+        renderQueue = [];
         renderTypeScript(options);
         return Promise.resolve()
+            .then(() => renderNextCodeCardAsync(options.codeCardClass, options))
             .then(() => renderNamespaces(options))
             .then(() => renderInlineBlocksAsync(options))
             .then(() => renderLinksAsync(options, options.linksClass, options.snippetReplaceParent, false))
             .then(() => renderLinksAsync(options, options.namespacesClass, options.snippetReplaceParent, true))
             .then(() => renderSignaturesAsync(options))
-            .then(() => renderNextCodeCardAsync(options.codeCardClass, options))
             .then(() => renderSnippetsAsync(options))
             .then(() => renderBlocksAsync(options))
             .then(() => renderBlocksXmlAsync(options))
             .then(() => renderProjectAsync(options))
+            .then(() => consumeRenderQueueAsync())
     }
 }

@@ -72,6 +72,10 @@ namespace pxt.semver {
         return null
     }
 
+    export function normalize(v: string): string {
+        return stringify(parse(v));
+    }
+
     export function stringify(v: Version) {
         let r = v.major + "." + v.minor + "." + v.patch
         if (v.pre.length)
@@ -105,6 +109,17 @@ namespace pxt.semver {
         const lwr = cmp(minInclusive, v);
         const hr = cmp(v, maxExclusive);
         return lwr <= 0 && hr < 0;
+    }
+
+    /**
+     * Filters and sort tags from latest to oldest (semver wize)
+     * @param tags 
+     */
+    export function sortLatestTags(tags: string[]): string[] {
+        const v = tags.filter(tag => !!semver.tryParse(tag));
+        v.sort(strcmp);
+        v.reverse();
+        return v;
     }
 
     export function test() {
@@ -144,5 +159,4 @@ namespace pxt.semver {
         U.assert(!inRange("1.2.4 - 4.2.3", v))
         U.assert(!inRange("0.0.0 - 0.0.1", v))
     }
-
 }

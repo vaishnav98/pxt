@@ -1,4 +1,7 @@
 declare namespace pxt {
+
+    type CodeCardType = "file" | "example" | "codeExample" | "tutorial" | "side" | "template" | "package" | "hw";
+
     interface Map<T> {
         [index: string]: T;
     }
@@ -37,6 +40,8 @@ declare namespace pxt {
         files: string[];
         simFiles?: string[];
         testFiles?: string[];
+        testDependencies?: pxt.Map<string>;
+        cppDependencies?: pxt.Map<string>;
         public?: boolean;
         binaryonly?: boolean;
         platformio?: PlatformIOConfig;
@@ -47,13 +52,18 @@ declare namespace pxt {
         npmDependencies?: Map<string>;
         card?: CodeCard;
         additionalFilePath?: string;
+        additionalFilePaths?: string[];
         core?: boolean;
+        // used for sorting for core packages
+        weight?: number;
         gistId?: string;
         extension?: PackageExtension; // describe the associated extension if any
         dalDTS?: {
-            includeDirs: string[];
+            corePackage?: string;
+            includeDirs?: string[];
             excludePrefix?: string[];
         };
+        features?: string[];
     }
 
     interface PackageExtension {
@@ -94,8 +104,10 @@ declare namespace pxt {
         role?: string;
         ariaLabel?: string;
         label?: string;
+        labelIcon?: string;
         labelClass?: string;
-        tabIndex?: number
+        tags?: string[]; // tags shown in home screen, colors specified in theme
+        tabIndex?: number;
 
         color?: string; // one of semantic ui colors
         description?: string;
@@ -107,8 +119,11 @@ declare namespace pxt {
         youTubeId?: string;
         time?: number;
         url?: string;
+        learnMoreUrl?: string;
+        buyUrl?: string;
+        feedbackUrl?: string;
         responsive?: boolean;
-        cardType?: "file" | "example" | "codeExample" | "tutorial" | "side" | "template" | "package";
+        cardType?: CodeCardType;
 
         header?: string;
         any?: number;
@@ -122,9 +137,11 @@ declare namespace pxt {
         iconColor?: string;
 
         onClick?: (e: any) => void; // React event
+        onLabelClicked?: (e: any) => void;
 
         target?: string;
         className?: string;
+        variant?: string;
     }
 
     interface JRes {

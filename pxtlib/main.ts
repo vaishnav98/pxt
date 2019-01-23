@@ -9,35 +9,102 @@ namespace pxt {
     export import U = pxtc.Util;
     export import Util = pxtc.Util;
 
+
+    export interface TCPIO {
+        onData: (v: Uint8Array) => void;
+        onError: (e: Error) => void;
+        connectAsync(): Promise<void>;
+        sendPacketAsync(pkt: Uint8Array): Promise<void>;
+        error(msg: string): any;
+        disconnectAsync(): Promise<void>;
+    }
+
+    export let mkTCPSocket: (host: string, port: number) => TCPIO;
+
     let savedAppTarget: TargetBundle;
+    let savedSwitches: pxtc.CompileSwitches = {}
+
     export function setAppTarget(trg: TargetBundle) {
         appTarget = trg || <TargetBundle>{};
+        patchAppTarget();
+        savedAppTarget = U.clone(appTarget)
+    }
 
+    export function savedAppTheme(): AppTheme {
+        return savedAppTarget ? savedAppTarget.appTheme : undefined;
+    }
+
+    export function setCompileSwitch(name: string, value: boolean) {
+        (savedSwitches as any)[name] = value
+        if (appTarget) {
+            U.jsonCopyFrom(appTarget.compile.switches, savedSwitches)
+            U.jsonCopyFrom(savedAppTarget.compile.switches, savedSwitches)
+        }
+    }
+
+    export function setCompileSwitches(names: string) {
+        if (!names)
+            return
+        for (let s of names.split(/[\s,;:]+/)) {
+            if (s)
+                setCompileSwitch(s, true)
+        }
+    }
+
+    let _bundledcoresvgs: pxt.Map<string>;
+    export function bundledSvg(id: string): string {
+        if (!id) return undefined;
+
+        let res = _bundledcoresvgs && _bundledcoresvgs[id];
+        if (res) return res; // cache hit
+
+        // find all core packages images
+        if (!appTarget.simulator || !appTarget.simulator.dynamicBoardDefinition)
+            return undefined;
+
+        if (!_bundledcoresvgs)
+            _bundledcoresvgs = {};
+
+        const files = pxt.appTarget.bundledpkgs[id];
+        if (!files)
+            return undefined;
+
+        // builtin packages are guaranteed to parse out
+        const pxtjson: pxt.PackageConfig = JSON.parse(files["pxt.json"]);
+        if (pxtjson.core && files["board.json"]) {
+            const boardjson = JSON.parse(files["board.json"]) as pxsim.BoardDefinition;
+            if (boardjson && boardjson.visual && (<pxsim.BoardImageDefinition>boardjson.visual).image) {
+                let boardimg = (<pxsim.BoardImageDefinition>boardjson.visual).image;
+                if (/^pkg:\/\//.test(boardimg))
+                    boardimg = files[boardimg.slice(6)];
+                // this call gets expensive when having large number of boards
+                _bundledcoresvgs[id] = `data:image/svg+xml;base64,${ts.pxtc.encodeBase64(pxt.Util.toUTF8(boardimg))}`;
+            }
+        }
+
+        return _bundledcoresvgs[id];
+    }
+
+    function patchAppTarget() {
         // patch-up the target
         let comp = appTarget.compile
         if (!comp)
-            comp = appTarget.compile = { isNative: false, hasHex: false }
-        if (comp.hasHex && comp.jsRefCounting === undefined)
-            comp.jsRefCounting = true
-        if (!comp.hasHex && comp.floatingPoint === undefined)
-            comp.floatingPoint = true
-        if (comp.hasHex && !comp.nativeType)
-            comp.nativeType = pxtc.NATIVE_TYPE_THUMB
-        if (comp.nativeType == pxtc.NATIVE_TYPE_AVR || comp.nativeType == pxtc.NATIVE_TYPE_AVRVM) {
-            comp.shortPointers = true
-            comp.flashCodeAlign = 0x10
+            comp = appTarget.compile = { isNative: false, hasHex: false, switches: {} }
+        if (comp.hasHex) {
+            if (!comp.nativeType)
+                comp.nativeType = pxtc.NATIVE_TYPE_THUMB
         }
-        if (comp.nativeType == pxtc.NATIVE_TYPE_CS) {
-            comp.floatingPoint = true
-            comp.needsUnboxing = true
-            comp.jsRefCounting = false
-        }
-        if (comp.taggedInts) {
-            comp.floatingPoint = true
-            comp.needsUnboxing = true
-        }
+        if (!comp.switches)
+            comp.switches = {}
+        U.jsonCopyFrom(comp.switches, savedSwitches)
+        // JS ref counting currently not supported
+        comp.jsRefCounting = false
         if (!comp.vtableShift)
             comp.vtableShift = 2
+        if (!comp.useUF2 && !comp.useELF && comp.noSourceInFlash == undefined)
+            comp.noSourceInFlash = true // no point putting sources in hex to be flashed
+        if (comp.utf8 === undefined)
+            comp.utf8 = true
         if (!appTarget.appTheme) appTarget.appTheme = {}
         if (!appTarget.appTheme.embedUrl)
             appTarget.appTheme.embedUrl = appTarget.appTheme.homeUrl
@@ -46,17 +113,55 @@ namespace pxt {
             if (cs.yottaTarget && !cs.yottaBinary)
                 cs.yottaBinary = "pxt-microbit-app-combined.hex"
         }
-
-        // patch cdn
+        // patch logo locations
         const theme = appTarget.appTheme;
-        let targetImages = Object.keys(theme as any as Map<string>)
-            .filter(k => /(logo|hero)$/i.test(k) && /^@cdnUrl@/.test((theme as any)[k]))
-            .forEach(k => (theme as any)[k] = pxt.BrowserUtils.patchCdn((theme as any)[k]));
+        if (theme) {
+            Object.keys(theme as any as Map<string>)
+                .filter(k => /(logo|hero)$/i.test(k) && /^@cdnUrl@/.test((theme as any)[k]))
+                .forEach(k => (theme as any)[k] = pxt.BrowserUtils.patchCdn((theme as any)[k]));
+        }
 
-        savedAppTarget = U.clone(appTarget)
+        // patching simulator images
+        const sim = appTarget.simulator;
+        if (sim
+            && sim.boardDefinition
+            && sim.boardDefinition.visual) {
+            let boardDef = sim.boardDefinition.visual as pxsim.BoardImageDefinition;
+            if (boardDef.image) {
+                boardDef.image = pxt.BrowserUtils.patchCdn(boardDef.image)
+                if (boardDef.outlineImage) boardDef.outlineImage = pxt.BrowserUtils.patchCdn(boardDef.outlineImage)
+            }
+        }
+
+        // patch icons in bundled packages
+        Object.keys(appTarget.bundledpkgs).forEach(pkgid => {
+            const res = appTarget.bundledpkgs[pkgid];
+            // path config before storing
+            const config = JSON.parse(res[pxt.CONFIG_NAME]) as pxt.PackageConfig;
+            if (config.icon) config.icon = pxt.BrowserUtils.patchCdn(config.icon);
+            res[pxt.CONFIG_NAME] = JSON.stringify(config, null, 4);
+        })
+
+        // patch any pre-configured query url appTheme overrides
+        if (appTarget.queryVariants && typeof window !== 'undefined') {
+            const href = window.location.href;
+            Object.keys(appTarget.queryVariants).forEach(queryRegex => {
+                const regex = new RegExp(queryRegex, "i");
+                const match = regex.exec(href);
+                if (match) {
+                    // Apply any appTheme overrides
+                    let v = appTarget.queryVariants[queryRegex];
+                    if (v) {
+                        U.jsonMergeFrom(appTarget, v);
+                    }
+                }
+            });
+        }
     }
 
+    // this is set by compileServiceVariant in pxt.json
     export function setAppTargetVariant(variant: string) {
+        pxt.debug(`app variant: ${variant}`);
         appTargetVariant = variant
         appTarget = U.clone(savedAppTarget)
         if (variant) {
@@ -69,6 +174,26 @@ namespace pxt {
             }
             U.userError(lf("Variant '{0}' not defined in pxtarget.json", variant))
         }
+        patchAppTarget();
+    }
+
+    // This causes the `hw` package to be replaced with `hw---variant` upon package load
+    // the pxt.json of hw---variant would generally specify compileServiceVariant
+    // This is controlled by ?hw=variant or by configuration created by dragging `config.bin`
+    // into editor.
+    export function setHwVariant(variant: string) {
+        variant = variant.replace(/.*---/, "")
+        if (/^[\w\-]+$/.test(variant))
+            hwVariant = variant
+        else
+            hwVariant = null
+    }
+
+    export function getHwVariants(): PackageConfig[] {
+        if (!pxt.appTarget.variants)
+            return []
+        let hws = Object.keys(pxt.appTarget.bundledpkgs).filter(pkg => /^hw---/.test(pkg))
+        return hws.map(pkg => JSON.parse(pxt.appTarget.bundledpkgs[pkg][CONFIG_NAME]))
     }
 
     export interface PxtOptions {
@@ -89,7 +214,7 @@ namespace pxt {
             console.log(msg);
         } : () => { };
 
-    export let reportException: (err: any, data?: Map<string>) => void = function (e, d) {
+    export let reportException: (err: any, data?: Map<string | number>) => void = function (e, d) {
         if (console) {
             console.error(e);
             if (d) {
@@ -101,7 +226,7 @@ namespace pxt {
             }
         }
     }
-    export let reportError: (cat: string, msg: string, data?: Map<string>) => void = function (cat, msg, data) {
+    export let reportError: (cat: string, msg: string, data?: Map<string | number>) => void = function (cat, msg, data) {
         if (console) {
             console.error(`${cat}: ${msg}`);
             if (data) {
@@ -145,6 +270,7 @@ namespace pxt {
         runUrl?: string; // "/beta---run"
         docsUrl?: string; // "/beta---docs"
         isStatic?: boolean;
+        verprefix?: string; // "v1"
     }
 
     export function localWebConfig() {
@@ -206,8 +332,10 @@ namespace pxt {
     export interface FsPkg {
         path: string; // eg "foo/bar"
         config: pxt.PackageConfig; // pxt.json
+        header: any;
         files: FsFile[]; // this includes pxt.json
         icon?: string;
+        isDeleted?: boolean; // whether this project has been deleted by the user
     }
 
     export interface FsPkgs {
@@ -244,8 +372,6 @@ namespace pxt {
 
     export function outputName(trg: CompileTarget = null) {
         if (!trg) trg = appTarget.compile
-        if (trg.nativeType == ts.pxtc.NATIVE_TYPE_CS)
-            return ts.pxtc.BINARY_CS
         if (trg.useUF2)
             return ts.pxtc.BINARY_UF2
         else if (trg.useELF)
@@ -255,6 +381,6 @@ namespace pxt {
     }
 
     export function isOutputText(trg: CompileTarget = null) {
-        return outputName(trg) == ts.pxtc.BINARY_HEX || outputName(trg) == ts.pxtc.BINARY_CS
+        return outputName(trg) == ts.pxtc.BINARY_HEX
     }
 }

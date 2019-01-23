@@ -24,6 +24,7 @@ export class FileList extends data.Component<ISettingsProps, FileListState> {
         this.toggleVisibility = this.toggleVisibility.bind(this);
         this.handleCustomBlocksClick = this.handleCustomBlocksClick.bind(this);
         this.handleButtonKeydown = this.handleButtonKeydown.bind(this);
+        this.handleSyncClick = this.handleSyncClick.bind(this);
         this.setFile = this.setFile.bind(this);
         this.removeFile = this.removeFile.bind(this);
         this.removePkg = this.removePkg.bind(this);
@@ -47,8 +48,8 @@ export class FileList extends data.Component<ISettingsProps, FileListState> {
 
     private removePkg(p: pkg.EditorPackage) {
         core.confirmAsync({
-            header: lf("Remove {0} package", p.getPkgId()),
-            body: lf("You are about to remove a package from your project. Are you sure?"),
+            header: lf("Remove {0} extension", p.getPkgId()),
+            body: lf("You are about to remove an extension from your project. Are you sure?"),
             agreeClass: "red",
             agreeIcon: "trash",
             agreeLbl: lf("Remove it"),
@@ -107,10 +108,12 @@ export class FileList extends data.Component<ISettingsProps, FileListState> {
             && p.getKsPkg().level <= 1;
         const upd = p.getKsPkg() && p.getKsPkg().verProtocol() == "github";
         const meta: pkg.PackageMeta = this.getData("open-pkg-meta:" + p.getPkgId());
+        let version = upd ? p.getKsPkg().verArgument().split('#')[1] : undefined; // extract github tag
+        if (version && version.length > 20) version = version.substring(0, 7);
         return [<PackgeTreeItem key={"hd-" + p.getPkgId()}
             pkg={p} isActive={expandedPkg == p.getPkgId()} onItemClick={this.togglePkg}
             hasDelete={del} onItemRemove={this.removePkg}
-            hasRefresh={upd} onItemRefresh={this.updatePkg} >
+            version={version} hasRefresh={upd} onItemRefresh={this.updatePkg} >
             {!meta.numErrors ? null : <span className='ui label red'>{meta.numErrors}</span>}
             {p.getPkgId()}
             {expandedPkg == p.getPkgId() ?
@@ -136,6 +139,11 @@ export class FileList extends data.Component<ISettingsProps, FileListState> {
         this.props.parent.setState({ showFiles: !this.props.parent.state.showFiles });
     }
 
+    private handleSyncClick(e: React.MouseEvent<any>) {
+        this.props.parent.pushPullAsync();
+        e.stopPropagation();
+    }
+
     private handleCustomBlocksClick(e: React.MouseEvent<any>) {
         this.addCustomBlocksFile();
         e.stopPropagation();
@@ -145,7 +153,35 @@ export class FileList extends data.Component<ISettingsProps, FileListState> {
         e.stopPropagation();
     }
 
+    private addTypeScriptFile() {
+        core.promptAsync({
+            header: lf("Add new file?"),
+            body: lf("Please provide a name for your new file. The .ts extension will be added automatically. Don't use spaces or special characters.")
+        }).then(str => {
+            str = str || ""
+            str = str.trim()
+            str = str.replace(/\.[tj]s$/, "")
+            str = str.trim()
+            if (!str)
+                return Promise.resolve()
+            if (!/^[\w\-]+$/.test(str)) {
+                core.warningNotification(lf("Invalid file name"))
+                return Promise.resolve()
+            }
+            str += ".ts"
+            if (pkg.mainEditorPkg().sortedFiles().some(f => f.name == str)) {
+                core.warningNotification(lf("File already exists"))
+                return Promise.resolve()
+            }
+            return this.props.parent.updateFileAsync(str, "// Add your code here\n", true)
+        }).done()
+    }
+
     private addCustomBlocksFile() {
+        if (this.props.parent.state.header.githubId || pxt.appTarget.appTheme.addNewTypeScriptFile) {
+            this.addTypeScriptFile()
+            return
+        }
         core.confirmAsync({
             header: lf("Add custom blocks?"),
             body: lf("A new JavaScript file, custom.ts, will be added to your project. You can define custom functions and blocks in that file.")
@@ -196,12 +232,15 @@ namespace custom {
     renderCore() {
         const show = !!this.props.parent.state.showFiles;
         const targetTheme = pxt.appTarget.appTheme;
-        const plus = show && !pkg.mainEditorPkg().files[customFile]
-        const meta: pkg.PackageMeta = this.getData("open-pkg-meta:" + pkg.mainEditorPkg().getPkgId());
+        const mainPkg = pkg.mainEditorPkg()
+        const plus = show && !mainPkg.files[customFile]
+        const sync = show && pxt.github.token && !!mainPkg.header.githubId
+        const meta: pkg.PackageMeta = this.getData("open-pkg-meta:" + mainPkg.getPkgId());
         return <div role="tree" className={`ui tiny vertical ${targetTheme.invertedMenu ? `inverted` : ''} menu filemenu landscape only hidefullscreen`}>
             <div role="treeitem" aria-selected={show} aria-expanded={show} aria-label={lf("File explorer toolbar")} key="projectheader" className="link item" onClick={this.toggleVisibility} tabIndex={0} onKeyDown={sui.fireClickOnEnter}>
                 {lf("Explorer")}
                 <sui.Icon icon={`chevron ${show ? "down" : "right"} icon`} />
+                {sync ? <sui.Button className="primary label" icon="github" title={lf("Sync with github")} onClick={this.handleSyncClick} onKeyDown={this.handleButtonKeydown} /> : undefined}
                 {plus ? <sui.Button className="primary label" icon="plus" title={lf("Add custom blocks?")} onClick={this.handleCustomBlocksClick} onKeyDown={this.handleButtonKeydown} /> : undefined}
                 {!meta.numErrors ? null : <span className='ui label red'>{meta.numErrors}</span>}
             </div>
@@ -269,6 +308,7 @@ interface PackageTreeItemProps {
     onItemRefresh: (p: pkg.EditorPackage) => void;
     isActive?: boolean;
     hasRefresh?: boolean;
+    version?: string;
     hasDelete?: boolean;
 }
 
@@ -301,7 +341,7 @@ class PackgeTreeItem extends sui.StatelessUIElement<PackageTreeItemProps> {
     }
 
     renderCore() {
-        const { onItemClick, onItemRemove, onItemRefresh,
+        const { onItemClick, onItemRemove, onItemRefresh, version,
             isActive, hasRefresh, hasDelete, pkg: p, ...rest } = this.props;
 
         return <div className="header link item" role="treeitem"
@@ -309,10 +349,10 @@ class PackgeTreeItem extends sui.StatelessUIElement<PackageTreeItemProps> {
             aria-label={lf("{0}, {1}", p.getPkgId(), isActive ? lf("expanded") : lf("collapsed"))}
             onClick={this.handleClick} tabIndex={0} onKeyDown={sui.fireClickOnEnter} {...rest}>
             <sui.Icon icon={`chevron ${isActive ? "down" : "right"} icon`} />
-            {hasRefresh ? <sui.Button className="primary label" icon="refresh" title={lf("Refresh package {0}", p.getPkgId())}
-                onClick={this.handleRefresh} onKeyDown={this.handleButtonKeydown} /> : ''}
-            {hasDelete ? <sui.Button className="primary label" icon="trash" title={lf("Delete package {0}", p.getPkgId())}
-                onClick={this.handleRemove} onKeyDown={this.handleButtonKeydown} /> : ''}
+            {hasRefresh ? <sui.Button className="primary label" icon="refresh" title={lf("Refresh extension {0}", p.getPkgId())}
+                onClick={this.handleRefresh} onKeyDown={this.handleButtonKeydown} text={version || ''}></sui.Button> : undefined}
+            {hasDelete ? <sui.Button className="primary label" icon="trash" title={lf("Delete extension {0}", p.getPkgId())}
+                onClick={this.handleRemove} onKeyDown={this.handleButtonKeydown} /> : undefined}
 
             {this.props.children}
         </div>

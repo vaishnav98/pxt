@@ -1,3 +1,6 @@
+/// <reference path="./tickEvent.ts" />
+/// <reference path="./apptarget.ts" />
+
 namespace ts.pxtc {
     export let __dummy = 42;
 }
@@ -5,7 +8,6 @@ namespace ts.pxtc {
 import pxtc = ts.pxtc
 
 namespace ts.pxtc.Util {
-
     export function assert(cond: boolean, msg = "Assertion failed") {
         if (!cond) {
             debugger
@@ -42,44 +44,14 @@ namespace ts.pxtc.Util {
         return "\"" + jsStringQuote(s) + "\"";
     }
 
+
     // Localization functions. Please port any modifications over to pxtsim/localization.ts
     let _localizeLang: string = "en";
     let _localizeStrings: pxt.Map<string> = {};
     let _translationsCache: pxt.Map<pxt.Map<string>> = {};
+    let _didSetlocalizations = false;
+    let _didReportLocalizationsNotSet = false;
     export let localizeLive = false;
-
-    export interface ITranslationDbEntry {
-        id?: string;
-        etag: string;
-        strings: pxt.Map<string>;
-        cached?: boolean; // cached in memory, no download needed
-    }
-
-    export interface ITranslationDb {
-        getAsync(lang: string, filename: string, branch: string): Promise<ITranslationDbEntry>;
-        setAsync(lang: string, filename: string, branch: string, etag: string, strings: pxt.Map<string>): Promise<void>;
-    }
-
-    class MemTranslationDb implements ITranslationDb {
-        translations: pxt.Map<ITranslationDbEntry> = {};
-        key(lang: string, filename: string, branch: string) {
-            return `${lang}|${filename}|${branch || ""}`;
-        }
-        getAsync(lang: string, filename: string, branch: string): Promise<ITranslationDbEntry> {
-            return Promise.resolve(this.translations[this.key(lang, filename, branch)]);
-        }
-        setAsync(lang: string, filename: string, branch: string, etag: string, strings: pxt.Map<string>): Promise<void> {
-            this.translations[this.key(lang, filename, branch)] = {
-                etag,
-                strings,
-                cached: true
-            }
-            return Promise.resolve();
-        }
-    }
-
-    // wired up in the app to store translations in pouchdb. MAY BE UNDEFINED!
-    export let translationDb: ITranslationDb = new MemTranslationDb();
 
     /**
      * Returns the current user language, prepended by "live-" if in live mode
@@ -98,20 +70,18 @@ namespace ts.pxtc.Util {
     }
 
     export function isUserLanguageRtl(): boolean {
-        // ar: Arabic
-        // dv: Divehi
-        // fa: Farsi
-        // ha: Hausa
-        // he: Hebrew
-        // ks: Kashmiri
-        // ku: Kurdish
-        // ps: Pashto
-        // ur: Urdu
-        // yi: Yiddish
         return /^ar|dv|fa|ha|he|ks|ku|ps|ur|yi/i.test(_localizeLang);
     }
 
     export function _localize(s: string) {
+        // Needs to be test in localhost / CLI
+        /*if (!_didSetlocalizations && !_didReportLocalizationsNotSet) {
+            _didReportLocalizationsNotSet = true;
+            pxt.tickEvent("locale.localizationsnotset");
+            // pxt.reportError can't be used here because of order of file imports
+            // Just use console.error instead, and use an Error so stacktrace is reported
+            console.error(new Error("Attempted to translate a string before localizations were set"));
+        }*/
         return _localizeStrings[s] || s;
     }
 
@@ -120,6 +90,7 @@ namespace ts.pxtc.Util {
     }
 
     export function setLocalizedStrings(strs: pxt.Map<string>) {
+        _didSetlocalizations = true;
         _localizeStrings = strs;
     }
 
@@ -187,6 +158,8 @@ namespace ts.pxtc.Util {
 
     let sForPlural = true;
     export function lf_va(format: string, args: any[]): string {
+        if (!format) return format;
+
         locStats[format] = (locStats[format] || 0) + 1;
         let lfmt = Util._localize(format)
 

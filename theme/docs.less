@@ -5,6 +5,7 @@
 /* Background and foreground */
 @docsBackgroundColor: white;
 @docsTextColor: #333;
+@docsLineHeight: 1.7;
 
 /* Text color */
 @docsHeadingColor: @docsTextColor;
@@ -13,7 +14,9 @@
 @docsLinkColor: #4183c4;
 
 /* Code segment */
-@docsSegementBackgroundColor: white;
+@docsSegementBackgroundColor: #f7f7f7;
+@docsSegementBackgroundColorValid: #edf9ef;
+@docsSegementBackgroundColorInvalid: #fbf3f4;
 
 /* Card */
 @docsCardBackgroundColor: white;
@@ -29,13 +32,24 @@
     background-color: @docsBackgroundColor;
     font-family: @docsPageFont !important;
     color: @docsTextColor;
+    * {
+        -webkit-overflow-scrolling: touch;
+        -webkit-tap-highlight-color: transparent;
+        -webkit-text-size-adjust: none;
+        -webkit-touch-callout: none;
+        -webkit-font-smoothing: antialiased;
+    }
     h1, h2, h3, h4, h5, h6 {
         font-family: @docsHeaderFont !important;
         color: @docsHeadingColor;
     }
+    h1 {
+        margin-bottom: .85em;
+    }
     /* Text color */
     p, ul li {
         color: @docsTextColor;
+        line-height: @docsLineHeight;
     }
     /* Link color */
     a {
@@ -45,9 +59,42 @@
         display: inline-block;
         vertical-align: middle;
     }
-    .ui.segment {
-        background: @docsSegementBackgroundColor !important;
+    span.docs, text.blocklyText {
+        -webkit-font-smoothing: auto !important;
     }
+    /* Code segments */
+    .mainbody .ui.segment, pre {
+        background: @docsSegementBackgroundColor !important;
+        border-radius: 0 !important;
+        border: 0 !important;
+        margin-bottom: 1.275em;
+        box-shadow: none;
+    }
+    .mainbody div.codewidget.valid, code.valid{
+        background: @docsSegementBackgroundColorValid !important;
+    }
+    .mainbody div.codewidget.invalid, code.invalid{
+        background: @docsSegementBackgroundColorInvalid !important;
+    }
+
+    .mainbody div.codewidget.valid, .mainbody div.codewidget.invalid {
+        overflow: auto;
+    }
+
+    .invalid i.icon, .valid i.icon {
+        float: right;
+        margin-top: 10px;
+        margin-right: 10px;
+        font-size: 30px;
+    }
+
+    .invalid i.icon {
+        color: #a31515;
+    }
+    .valid i.icon {
+        color: #008000;
+    }
+
     .avatar .ui.message {
         margin-left: 4em;
         margin-bottom: 1em;
@@ -82,22 +129,61 @@
         color: black;
     }
     /* TOC */
-    .toc a.header {
+    .toc .inverted .item.title a.header {
+        margin-right: 1em;
+    }
+    .toc .inverted .item a.header {
         color: white;
     }
     .toc a.item {
-        color: rgba(255, 255, 255, 0.8);
+        color: black;
         padding: 10px 15px !important;
     }
+    .toc .inverted a.item {
+        color: rgba(255, 255, 255, 1);
+    }
+
     .toc a.item:hover {
         text-decoration: @linkHoverUnderline;
     }
+
+    .toc .inverted .item.search {
+        margin: -.92857143em -1.14285714em;
+    }
+
+    .toc .item.search input {
+        border-radius: 0;
+    }
+
     .tocmenu .menu {
         padding-left: 20px;
+        font-family: @docsPageFont;
     }
     /* Buttons */
     .ui.primary.button p {
         color: white;
+    }
+
+    #sidedocs-back-button {
+        margin-top: 1.25rem;
+        margin-left: 1.25rem;
+        cursor: pointer;
+        user-select: none;
+    }
+
+    #sidedocs-back-button.disabled {
+        color: #aeaeae;
+        cursor: not-allowed;
+    }
+    table {
+        border-collapse: collapse;
+    }
+    table tr th, table tr td {
+        border: 1px solid #333;
+        padding: 6px 13px;
+    }
+    table tr:nth-child(2n) {
+        background-color: #f8f8f8;
     }
 }
 

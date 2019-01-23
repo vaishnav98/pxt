@@ -1,10 +1,10 @@
 # Summary
 
 * [About](/about)
+* [FAQ](/faq)
+* [Projects](/projects)
 
 ## #support
-
-## #projects
 
 ## #examples
 
@@ -22,6 +22,7 @@
         * [repeat](/blocks/loops/repeat)
         * [for](/blocks/loops/for)
         * [while](/blocks/loops/while)
+        * [for of](/blocks/loops/for-of)
     * [Logic](/blocks/logic)
         * [if](/blocks/logic/if)
         * [Boolean](/blocks/logic/boolean)
@@ -58,15 +59,15 @@
 
 ## #other
 
-## Miscellanous #misc
+## Miscellaneous #misc
 
-* Miscellanous
+* Miscellaneous
     * [About](/about)
     * [Support](/support)
-    * [FAQ](/faq)
     * [Translate](/translate)
     * [Sharing projects](/share)
     * [Offline support](/offline)
+    * [Save](/save)
 
 ## Developers #devs
 
@@ -74,4 +75,3 @@
     * [Command Line Interface](/cli)
     * [Visual Studio Code support](/code)
     * [Blocks Embed](/blocks-embed)
-

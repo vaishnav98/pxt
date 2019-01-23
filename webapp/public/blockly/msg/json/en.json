@@ -1,7 +1,7 @@
 {
 	"@metadata": {
 		"author": "Ellen Spertus <ellen.spertus@gmail.com>",
-		"lastupdated": "2018-03-22 10:39:04.109321",
+		"lastupdated": "2018-12-20 13:40:24.418000",
 		"locale": "en",
 		"messagedocumentation" : "qqq"
 	},
@@ -10,6 +10,7 @@
 	"DUPLICATE_BLOCK": "Duplicate",
 	"ADD_COMMENT": "Add Comment",
 	"REMOVE_COMMENT": "Remove Comment",
+	"DUPLICATE_COMMENT": "Duplicate Comment",
 	"EXTERNAL_INPUTS": "External Inputs",
 	"INLINE_INPUTS": "Inline Inputs",
 	"DELETE_BLOCK": "Delete Block",
@@ -32,6 +33,8 @@
 	"NEW_STRING_VARIABLE": "Create string variable...",
 	"NEW_NUMBER_VARIABLE": "Create number variable...",
 	"NEW_COLOUR_VARIABLE": "Create colour variable...",
+	"NEW_VARIABLE_DROPDOWN": "New variable...",
+	"NEW_VARIABLE_TYPE_DROPDOWN": "New %1 variable...",
 	"NEW_VARIABLE_TYPE_TITLE": "New variable type:",
 	"NEW_VARIABLE_TITLE": "New variable name:",
 	"VARIABLE_ALREADY_EXISTS": "A variable named '%1' already exists.",

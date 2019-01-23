@@ -43,30 +43,12 @@ export function saveAsync(header: Header, screenshot: string): Promise<void> {
         });
 }
 
-export function loadImageAsync(url: string) {
-    return new Promise<HTMLCanvasElement>((resolve, reject) => {
-        const img = new Image();
-        img.src = url
-        img.onload = () => {
-            const canvas = document.createElement("canvas")
-            canvas.width = img.width
-            canvas.height = img.height
-            const ctx = canvas.getContext("2d")
-            ctx.drawImage(img, 0, 0);
-            resolve(canvas)
-        };
-        img.onerror = () => {
-            reject(new Error(lf("Cannot load image")))
-        }
-    })
-}
-
 const imageMagic = 0x59347a7d // randomly selected
 const imageHeaderSize = 36 // has to be divisible by 9
 
 export function decodeBlobAsync(dataURL: string) {
-    return loadImageAsync(dataURL)
-        .then<Uint8Array>(canvas => {
+    return pxt.BrowserUtils.loadCanvasAsync(dataURL)
+        .then(canvas => {
             const ctx = canvas.getContext("2d")
             const imgdat = ctx.getImageData(0, 0, canvas.width, canvas.height)
             const d = imgdat.data
@@ -116,8 +98,74 @@ export function decodeBlobAsync(dataURL: string) {
         })
 }
 
-export function encodeBlobAsync(dataURL: string, blob: Uint8Array) {
-    return loadImageAsync(dataURL)
+function chromifyAsync(canvas: HTMLCanvasElement, title: string): HTMLCanvasElement {
+    const w = canvas.width;
+    const h = canvas.height;
+    const work = document.createElement("canvas")
+    const topBorder = 16;
+    const bottomBorder = 16;
+    const leftBorder = 16;
+    const rightBorder = 16;
+    const bottom = 32;
+    work.width = w + leftBorder + rightBorder;
+    work.height = h + topBorder + bottomBorder + bottom;
+    const ctx = work.getContext("2d")
+    ctx.imageSmoothingEnabled = false
+    // white background
+    ctx.fillStyle = 'white'
+    ctx.fillRect(0, 0, work.width, work.height)
+
+    // draw image
+    ctx.drawImage(canvas, leftBorder, topBorder);
+
+    // header
+    const header = pxt.appTarget.thumbnailName || pxt.appTarget.name;
+    if (header) {
+        const lblTop = 12
+        ctx.fillStyle = 'black'
+        ctx.font = '10px monospace'
+        ctx.fillText(header, leftBorder, lblTop, w - leftBorder);
+    }
+
+    // title
+    if (title) {
+        const lblTop = topBorder + bottomBorder + h + 4;
+        ctx.fillStyle = 'black'
+        ctx.font = '13px monospace'
+        ctx.fillText(title, leftBorder, lblTop, w - leftBorder);
+    }
+
+    // domain
+    {
+        const lblTop = topBorder + bottomBorder + h + 4 + 16
+        ctx.fillStyle = '#444'
+        ctx.font = '10px monospace'
+        const url = pxt.appTarget.appTheme.homeUrl
+            .replace(/^https:\/\//, '')
+            .replace(/\/$/, '');
+        ctx.fillText(url, leftBorder, lblTop, w);
+    }
+
+    return work;
+}
+
+function defaultCanvasAsync(): Promise<HTMLCanvasElement> {
+    const cvs = document.createElement("canvas");
+    cvs.width = 160;
+    cvs.height = 120;
+    const ctx = cvs.getContext("2d");
+    ctx.fillStyle = '#33b';
+    ctx.fillRect(0, 0, 160, 120);
+    ctx.font = '30px monospace';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(':(', 60, 70);
+    return Promise.resolve(cvs);
+}
+
+export function encodeBlobAsync(title: string, dataURL: string, blob: Uint8Array) {
+    // if screenshot failed, dataURL is empty
+    return (dataURL ? pxt.BrowserUtils.loadCanvasAsync(dataURL) : defaultCanvasAsync())
+        .then(cvs => chromifyAsync(cvs, title))
         .then(canvas => {
             const neededBytes = imageHeaderSize + blob.length
             const usableBytes = (canvas.width * canvas.height - 1) * 3
@@ -214,10 +262,11 @@ export function encodeBlobAsync(dataURL: string, blob: Uint8Array) {
         })
 }
 
+/*
 export function testBlobEncodeAsync(dataURL: string, sz = 10000) {
     let blob = new Uint8Array(sz)
     pxt.Util.getRandomBuf(blob)
-    return encodeBlobAsync(dataURL, blob)
+    return encodeBlobAsync("test", dataURL, blob)
         .then(url => {
             let img = document.createElement("img")
             img.src = url
@@ -231,3 +280,4 @@ export function testBlobEncodeAsync(dataURL: string, sz = 10000) {
             }
         })
 }
+*/

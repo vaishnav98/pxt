@@ -1,5 +1,5 @@
 namespace pxt.github {
-    interface GHRef {
+    export interface GHRef {
         ref: string;
         url: string;
         object: {
@@ -9,14 +9,54 @@ namespace pxt.github {
         }
     }
 
+    export interface UserInfo {
+        date: string; // "2014-11-07T22:01:45Z",
+        name: string; // "Scott Chacon",
+        email: string; // "schacon@gmail.com"
+    }
+
+    export interface SHAObject {
+        url: string;
+        sha: string;
+    }
+
+    export interface TreeEntry extends SHAObject {
+        path: string; // ".clang-format",
+        mode: string; // "100644",
+        type: "blob" | "tree";
+        size?: number; // 126,
+    }
+
+    export interface Tree extends SHAObject {
+        tree: TreeEntry[];
+        truncated: boolean;
+    }
+
+    export interface Commit extends SHAObject {
+        author: UserInfo;
+        committer: UserInfo;
+        message: string; // "added readme, because im a good github citizen",
+        tree: Tree; // tree
+        parents: SHAObject[]; // commit[]
+        tag?: string;
+    }
+
+    export let token: string = null;
+
     export interface RefsResult {
         refs: pxt.Map<string>;
         head?: string;
     }
 
+    export let forceProxy = false;
+
     export function useProxy() {
+        if (forceProxy)
+            return true;
         if (U.isNodeJS)
             return false // bypass proxy for CLI
+        if (token)
+            return false
         if (pxt.appTarget && pxt.appTarget.cloud && pxt.appTarget.cloud.noGithubProxy)
             return false // target requests no proxy
         return true
@@ -30,6 +70,28 @@ namespace pxt.github {
     export interface IGithubDb {
         loadConfigAsync(repopath: string, tag: string): Promise<pxt.PackageConfig>;
         loadPackageAsync(repopath: string, tag: string): Promise<CachedPackage>;
+    }
+
+    function ghRequestAsync(opts: U.HttpRequestOptions) {
+        if (token) {
+            if (opts.url.indexOf('?') > 0)
+                opts.url += "&"
+            else
+                opts.url += "?"
+            opts.url += "access_token=" + token
+            // Token in headers doesn't work with CORS, especially for githubusercontent.com
+            //if (!opts.headers) opts.headers = {}
+            //opts.headers['Authorization'] = `token ${token}`
+        }
+        return U.requestAsync(opts)
+    }
+
+    function ghGetJsonAsync(url: string) {
+        return ghRequestAsync({ url }).then(resp => resp.json)
+    }
+
+    function ghGetTextAsync(url: string) {
+        return ghRequestAsync({ url }).then(resp => resp.text)
     }
 
     export class MemoryGithubDb implements IGithubDb {
@@ -74,7 +136,7 @@ namespace pxt.github {
                     .then(v => cacheConfig(v.files[pxt.CONFIG_NAME]))
             }
             let url = "https://raw.githubusercontent.com/" + repopath + "/" + tag + "/" + pxt.CONFIG_NAME
-            return U.httpGetTextAsync(url)
+            return ghGetTextAsync(url)
                 .then(cfg => cacheConfig(cfg));
         }
 
@@ -95,17 +157,16 @@ namespace pxt.github {
                     }
 
                     // load and cache
-                    const pref = "https://raw.githubusercontent.com/" + repopath + "/" + sha + "/"
                     pxt.log(`Downloading ${repopath}/${tag} -> ${sha}`)
-                    return U.httpGetTextAsync(pref + pxt.CONFIG_NAME)
+                    return downloadTextAsync(repopath, sha, pxt.CONFIG_NAME)
                         .then(pkg => {
                             const current: CachedPackage = {
                                 files: {}
                             }
                             current.files[pxt.CONFIG_NAME] = pkg
                             const cfg: pxt.PackageConfig = JSON.parse(pkg)
-                            return Promise.map(cfg.files.concat(cfg.testFiles || []),
-                                fn => U.httpGetTextAsync(pref + fn)
+                            return Promise.map(pxt.allPkgFiles(cfg).slice(1),
+                                fn => downloadTextAsync(repopath, sha, fn)
                                     .then(text => {
                                         current.files[fn] = text
                                     }))
@@ -119,8 +180,137 @@ namespace pxt.github {
         }
     }
 
+    export function downloadTextAsync(repopath: string, commitid: string, filepath: string) {
+        return ghGetTextAsync(
+            "https://raw.githubusercontent.com/" + repopath + "/" + commitid + "/" + filepath)
+    }
+
     // overriden by client
     export let db: IGithubDb = new MemoryGithubDb();
+
+    export function getCommitAsync(repopath: string, sha: string) {
+        return ghGetJsonAsync("https://api.github.com/repos/" + repopath + "/git/commits/" + sha)
+            .then((commit: Commit) => ghGetJsonAsync(commit.tree.url + "?recursive=1")
+                .then((tree: Tree) => {
+                    commit.tree = tree
+                    return commit
+                }))
+    }
+
+    // type=blob
+    export interface CreateBlobReq {
+        content: string;
+        encoding: "utf-8" | "base64";
+    }
+
+    // type=tree
+    export interface CreateTreeReq {
+        base_tree: string; // sha
+        tree: TreeEntry[];
+    }
+
+    // type=commit
+    export interface CreateCommitReq {
+        message: string;
+        parents: string[]; // shas
+        tree: string; // sha		
+    }
+
+    function ghPostAsync(path: string, data: any) {
+        return ghRequestAsync({
+            url: /^https:/.test(path) ? path : "https://api.github.com/repos/" + path,
+            method: "POST",
+            allowHttpErrors: true,
+            data: data
+        }).then(resp => {
+            if (resp.statusCode == 200 || resp.statusCode == 201 || resp.statusCode == 204)
+                return resp.json
+            throw U.userError(lf("Cannot create object at github.com/{0}; code: {1}",
+                path, resp.statusCode))
+        })
+    }
+
+    export function createObjectAsync(repopath: string, type: string, data: any) {
+        return ghPostAsync(repopath + "/git/" + type + "s", data)
+            .then((resp: SHAObject) => resp.sha)
+    }
+
+
+    export async function fastForwardAsync(repopath: string, branch: string, commitid: string) {
+        let resp = await ghRequestAsync({
+            url: "https://api.github.com/repos/" + repopath + "/git/refs/heads/" + branch,
+            method: "PATCH",
+            allowHttpErrors: true,
+            data: {
+                sha: commitid,
+                force: false
+            }
+        })
+        return (resp.statusCode == 200)
+    }
+
+    export async function putFileAsync(repopath: string, path: string, content: string) {
+        let resp = await ghRequestAsync({
+            url: "https://api.github.com/repos/" + repopath + "/contents/" + path,
+            method: "PUT",
+            allowHttpErrors: true,
+            data: {
+                message: lf("Initialize empty repo"),
+                content: btoa(U.toUTF8(content)),
+                branch: "master"
+            }
+        })
+        if (resp.statusCode != 201)
+            U.userError("PUT file failed")
+    }
+
+    export async function createTagAsync(repopath: string, tag: string, commitid: string) {
+        await ghPostAsync(repopath + "/git/refs", {
+            ref: "refs/tags/" + tag,
+            sha: commitid
+        })
+    }
+
+    export async function createPRAsync(repopath: string, branch: string, commitid: string, msg: string) {
+        let branchName = "pr-" + commitid.slice(0, 8)
+        await ghPostAsync(repopath + "/git/refs", {
+            ref: "refs/heads/" + branchName,
+            sha: commitid
+        })
+        let res = await ghPostAsync(repopath + "/pulls", {
+            title: msg,
+            body: lf("Automatically created from MakeCode."),
+            head: branchName,
+            base: "master",
+            maintainer_can_modify: true
+        })
+        return res.html_url as string
+    }
+
+    export function mergeAsync(repopath: string, branch: string, commitid: string) {
+        return ghRequestAsync({
+            url: "https://api.github.com/repos/" + repopath + "/merges",
+            method: "POST",
+            allowHttpErrors: true,
+            data: {
+                base: branch,
+                head: commitid
+            }
+        }).then(resp => {
+            if (resp.statusCode == 201 || resp.statusCode == 204)
+                return (resp.json as SHAObject).sha
+            if (resp.statusCode == 409) {
+                // conflict
+                return null
+            }
+            throw U.userError(lf("Cannot merge in github.com/{1}; code: {2}", repopath, resp.statusCode))
+        })
+    }
+
+    export function getRefAsync(repopath: string, branch: string) {
+        return ghGetJsonAsync("https://api.github.com/repos/" + repopath + "/git/refs/heads/" + branch)
+            .then(resolveRefAsync)
+    }
 
     export function listRefsAsync(repopath: string, namespace = "tags"): Promise<string[]> {
         return listRefsExtAsync(repopath, namespace)
@@ -129,8 +319,8 @@ namespace pxt.github {
 
     export function listRefsExtAsync(repopath: string, namespace = "tags"): Promise<RefsResult> {
         let head: string = null
-        let fetch = !useProxy ?
-            U.httpGetJsonAsync("https://api.github.com/repos/" + repopath + "/git/refs/" + namespace + "/?per_page=100") :
+        const fetch = !useProxy() ?
+            ghGetJsonAsync("https://api.github.com/repos/" + repopath + "/git/refs/" + namespace + "/?per_page=100") :
             U.httpGetJsonAsync(`${pxt.Cloud.apiRoot}gh/${repopath}/refs`)
                 .then(r => {
                     let res = Object.keys(r.refs)
@@ -159,7 +349,7 @@ namespace pxt.github {
         if (r.object.type == "commit")
             return Promise.resolve(r.object.sha)
         else if (r.object.type == "tag")
-            return U.httpGetJsonAsync(r.object.url)
+            return ghGetJsonAsync(r.object.url)
                 .then((r: GHRef) =>
                     r.object.type == "commit" ? r.object.sha :
                         Promise.reject(new Error("Bad type (2nd order) " + r.object.type)))
@@ -170,9 +360,9 @@ namespace pxt.github {
     function tagToShaAsync(repopath: string, tag: string) {
         if (/^[a-f0-9]{40}$/.test(tag))
             return Promise.resolve(tag)
-        return U.httpGetJsonAsync("https://api.github.com/repos/" + repopath + "/git/refs/tags/" + tag)
+        return ghGetJsonAsync("https://api.github.com/repos/" + repopath + "/git/refs/tags/" + tag)
             .then(resolveRefAsync, e =>
-                U.httpGetJsonAsync("https://api.github.com/repos/" + repopath + "/git/refs/heads/" + tag)
+                ghGetJsonAsync("https://api.github.com/repos/" + repopath + "/git/refs/heads/" + tag)
                     .then(resolveRefAsync))
     }
 
@@ -254,6 +444,20 @@ namespace pxt.github {
         description: string;
         defaultBranch: string;
         status?: GitRepoStatus;
+        updatedAt?: number;
+    }
+
+    export function listUserReposAsync() {
+        return ghGetJsonAsync("https://api.github.com/user/repos?per_page=200&sort=updated&affiliation=owner,collaborator")
+            .then((res: Repo[]) => res.map(r => mkRepo(r, null)))
+    }
+
+    export function createRepoAsync(name: string, description: string) {
+        return ghPostAsync("https://api.github.com/user/repos", {
+            name,
+            description,
+            private: false,
+        }).then(v => mkRepo(v, null))
     }
 
     export function repoIconUrl(repo: GitRepo): string {
@@ -274,7 +478,8 @@ namespace pxt.github {
             name: r.name,
             description: r.description,
             defaultBranch: r.default_branch,
-            tag: tag
+            tag: tag,
+            updatedAt: Math.round(new Date(r.updated_at).getTime() / 1000)
         }
         rr.status = repoStatus(rr, config);
         return rr;
@@ -334,7 +539,7 @@ namespace pxt.github {
             return Promise.resolve<GitRepo>(undefined);
 
         if (!useProxy())
-            return U.httpGetJsonAsync("https://api.github.com/repos/" + rid.fullName)
+            return ghGetJsonAsync("https://api.github.com/repos/" + rid.fullName)
                 .then((r: Repo) => mkRepo(r, config, rid.tag));
 
         // always use proxy
@@ -362,11 +567,19 @@ namespace pxt.github {
             return Promise.all(repos.map(id => repoAsync(id.path, config)))
                 .then(rs => rs.filter(r => r.status != GitRepoStatus.Banned)); // allow deep links to github repos
 
-        query += ` in:name,description,readme "for PXT/${appTarget.platformid || appTarget.id}"`
-        return U.httpGetJsonAsync("https://api.github.com/search/repositories?q=" + encodeURIComponent(query))
+        let fetch = () => useProxy()
+            ? U.httpGetJsonAsync(`${pxt.Cloud.apiRoot}ghsearch/${appTarget.id}/${appTarget.platformid || appTarget.id}?q=`
+                + encodeURIComponent(query))
+            : ghGetJsonAsync("https://api.github.com/search/repositories?q="
+                + encodeURIComponent(query + ` in:name,description,readme "for PXT/${appTarget.platformid || appTarget.id}"`))
+
+        return fetch()
             .then((rs: SearchResults) =>
                 rs.items.map(item => mkRepo(item, config))
-                    .filter(r => r.status == GitRepoStatus.Approved || (config.allowUnapproved && r.status == GitRepoStatus.Unknown)))
+                    .filter(r => r.status == GitRepoStatus.Approved || (config.allowUnapproved && r.status == GitRepoStatus.Unknown))
+                    // don't return the target itself!
+                    .filter(r => !pxt.appTarget.appTheme.githubUrl || `https://github.com/${r.fullName}` != pxt.appTarget.appTheme.githubUrl.toLowerCase())
+            )
             .catch(err => []); // offline
     }
 
@@ -388,6 +601,8 @@ namespace pxt.github {
         if (!repo) return undefined;
 
         repo = repo.replace(/^github:/i, "")
+        repo = repo.replace(/^https:\/\/github.com\//i, "")
+        repo = repo.replace(/\.git\b/i, "")
         let m = /([^#]+)(#(.*))?/.exec(repo)
         let owner = m ? m[1].split('/')[0].toLowerCase() : undefined;
         return {
@@ -398,6 +613,8 @@ namespace pxt.github {
     }
 
     export function isGithubId(id: string) {
+        if (!id)
+            return false
         return id.slice(0, 7) == "github:"
     }
 
@@ -420,9 +637,29 @@ namespace pxt.github {
                 return listRefsExtAsync(scr.fullName, "tags")
                     .then(refsRes => {
                         let tags = Object.keys(refsRes.refs)
-                        tags.reverse()
-                        // only look for vxx.xx.xx tags
-                        tags = tags.filter(t => /^v\d+(\.\d+(\.\d+)?)?$/i.test(t));
+                        // only look for semver tags
+                        tags = pxt.semver.sortLatestTags(tags);
+
+                        // check if the version has been frozen for this release
+                        const targetVersion = pxt.appTarget.versions && pxt.semver.tryParse(pxt.appTarget.versions.target);
+                        if (targetVersion && config.releases && config.releases["v" + targetVersion.major]) {
+                            const release = config.releases["v" + targetVersion.major]
+                                .map(repo => pxt.github.parseRepoId(repo))
+                                .filter(repo => repo.fullName.toLowerCase() == parsed.fullName.toLowerCase())
+                                [0];
+                            if (release) {
+                                // this repo is frozen to a particular tag for this target
+                                if (tags.some(t => t == release.tag)) { // tag still exists!!!
+                                    pxt.debug(`approved release ${release.fullName}#${release.tag} for v${targetVersion.major}`)
+                                    return Promise.resolve(release.tag);
+                                } else {
+                                    // so the package was snapped to a particular tag but the tag does not exist anymore
+                                    pxt.reportError(`packages`, `approved release ${release.fullName}#${release.tag} for v${targetVersion.major} not found anymore`, { repo: scr.fullName })
+                                    // in this case, we keep going, we might be lucky and the current version of the package might still load
+                                }
+                            }
+                        }
+
                         if (tags[0])
                             return Promise.resolve(tags[0])
                         else
@@ -431,39 +668,10 @@ namespace pxt.github {
             });
     }
 
-    export function publishGistAsync(token: string, forceNew: boolean, files: any, name: string, currentGistId: string): Promise<any> {
-        // Github gist API: https://developer.github.com/v3/gists/
-        const data = {
-            "description": name,
-            "public": false, /* there is no API to make a gist public or private, so it's easier/safer to always make it private and let the user make it public from the UI */
-            "files": files
-        };
-        const headers: Map<string> = {};
-        let method: string, url: string = "https://api.github.com/gists";
-        if (token) headers['Authorization'] = `token ${token}`;
-        if (currentGistId && token && !forceNew) {
-            // Patch existing gist
-            method = 'PATCH';
-            url += `/${currentGistId}`;
-        } else {
-            // Create new gist
-            method = 'POST';
-        }
-        return U.requestAsync({
-            url: url,
-            allowHttpErrors: true,
-            headers: headers,
-            method: method,
-            data: data || {}
-        })
-            .then((resp) => {
-                if ((resp.statusCode == 200 || resp.statusCode == 201) && resp.json.id) {
-                    return Promise.resolve<string>(resp.json.id);
-                } else if (resp.statusCode == 404 && method == 'PATCH') {
-                    return Promise.reject(resp.statusCode);
-                } else if (resp.statusCode == 404) {
-                    return Promise.reject("Make sure to add the ``gist`` scope to your token. " + resp.text);
-                } return Promise.reject(resp.text);
-            });
+    export interface GitJson {
+        repo: string;
+        commit: pxt.github.Commit;
     }
+
+    export const GIT_JSON = ".git.json"
 }

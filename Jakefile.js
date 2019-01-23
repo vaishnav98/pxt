@@ -12,6 +12,10 @@ function tscIn(task, dir, builtDir) {
     let command = 'node ' + path.relative(dir, './node_modules/typescript/bin/tsc')
     if (process.env.sourceMaps === 'true') {
         command += ' --sourceMap --mapRoot file:///' + path.resolve(builtDir)
+        if (process.env.PXT_ENV != 'production') {
+            // In development, dump the sources inline
+            command += ' --inlineSourceMap --inlineSources'
+        }
     }
     cmdIn(task, dir, command)
 }
@@ -70,7 +74,7 @@ function runKarma(that, flags) {
     cmdIn(that, "node_modules/.bin", command);
 }
 
-task('default', ['updatestrings', 'built/pxt.js', 'built/pxt.d.ts', 'built/pxtrunner.js', 'built/backendutils.js', 'built/target.js', 'wapp', 'monaco-editor', 'built/web/pxtweb.js'], { parallelLimit: 10 })
+task('default', ['updatestrings', 'built/pxt.js', 'built/pxt.d.ts', 'built/pxtrunner.js', 'built/backendutils.js', 'built/target.js', 'wapp', 'monaco-editor', 'built/web/pxtweb.js', 'built/tests/blocksrunner.js'], { parallelLimit: 10 })
 
 task('test', ['default', 'testfmt', 'testerr', 'testdecompiler', 'testlang', 'karma'])
 
@@ -83,7 +87,7 @@ task('clean', function () {
                 console.log("cannot unlink:", f, e.message)
             }
         })
-        jake.rmRf(d)    
+        jake.rmRf(d)
     })
 })
 
@@ -156,9 +160,13 @@ task("blocklycompilertest", ["default"], { async: true }, function () {
     cmdIn(this, "tests/blocklycompiler-test", "node ../../node_modules/typescript/bin/tsc")
 })
 
+file("built/tests/blocksrunner.js", ["built/pxtlib.js", "built/pxtcompiler.js", "built/pxtblocks.js", "built/pxteditor.js"], { async: true }, function () {
+    cmdIn(this, "tests/blocks-test", "node ../../node_modules/typescript/bin/tsc")
+})
+
 task("travis", ["lint", "test", "upload"])
 
-task('upload', ["wapp", "built/pxt.js"], { async: true }, function () {
+task('upload', ["wapp", "built/pxt.js", "built/tests/blocksrunner.js"], { async: true }, function () {
     jake.exec([
         "node built/pxt.js travis",
         "node built/pxt.js buildtarget"
@@ -287,7 +295,8 @@ task('wapp', [
     'built/web/icons.css',
     'built/web/blockly.css',
     'built/web/semantic.css',
-    "built/web/semantic.js"
+    "built/web/semantic.js",
+    "docs/playground.html"
 ])
 
 file("built/web/pxtlib.js", [
@@ -302,9 +311,11 @@ file("built/web/pxtlib.js", [
     jake.mkdirP("built/web")
     jake.cpR("node_modules/jquery/dist/jquery.min.js", "built/web/jquery.js")
     jake.cpR("node_modules/bluebird/js/browser/bluebird.min.js", "built/web/bluebird.min.js")
+    jake.cpR("node_modules/applicationinsights-js/dist/ai.0.js", "built/web/ai.0.js")
 
     jake.cpR("built/pxtlib.js", "built/web/")
     jake.cpR("built/pxtcompiler.js", "built/web/")
+    jake.cpR("built/pxtblocks.js", "built/web/")
     jake.cpR("built/pxtblockly.js", "built/web/")
     jake.cpR("built/pxtsim.js", "built/web/")
     jake.cpR("built/pxtrunner.js", "built/web/")
@@ -431,7 +442,7 @@ file('built/web/main.js', ["built/web/pxtapp.js", "built/webapp/src/app.js"], { 
         cmdIn(this, ".", 'node node_modules/browserify/bin/cmd ./built/webapp/src/app.js -g ' +
             '[ envify --NODE_ENV production ] -g uglifyify -o ./built/web/main.js')
     } else {
-        cmdIn(this, ".", 'node node_modules/browserify/bin/cmd built/webapp/src/app.js -o built/web/main.js')
+        cmdIn(this, ".", 'node node_modules/browserify/bin/cmd built/webapp/src/app.js -o built/web/main.js --debug')
     }
 })
 
@@ -495,6 +506,13 @@ file('built/web/icons.css', expand(["svgicons"]), { async: true }, function () {
             classPrefix: name + ".",
             baseClass: name
         },
+        // The following icons have fixed code points because they are referenced in the code
+        codepoints: {
+            function: 0xf109,
+            bucket: 0xf102,
+            undo: 0xf118,
+            redo: 0xf111
+        },
         writeFiles: false,
     }, function (error, res) {
         if (error) {
@@ -535,3 +553,9 @@ ju.catFiles("built/web/semantic.js",
         "node_modules/semantic-ui-less/definitions/modules/transition.js",
         "node_modules/semantic-ui-less/definitions/behaviors"], ".js"),
     "")
+
+file('docs/playground.html', ['built/web/pxtworker.js', 'built/web/pxtblockly.js', 'built/web/semantic.css'], function () {
+    jake.cpR("libs/pxt-common/pxt-core.d.ts", "docs/static/playground/pxt-common/pxt-core.d.js");
+    jake.cpR("libs/pxt-common/pxt-helpers.ts", "docs/static/playground/pxt-common/pxt-helpers.js");
+    jake.cpR("webapp/public/blockly/media/", "docs/static/playground/blockly/");
+})

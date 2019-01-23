@@ -22,6 +22,12 @@ export class Editor extends srceditor.Editor {
         this.setFileName = this.setFileName.bind(this);
         this.isUserConfigActive = this.isUserConfigActive.bind(this);
         this.applyUserConfig = this.applyUserConfig.bind(this);
+        this.goBack = this.goBack.bind(this);
+    }
+
+    goBack() {
+        pxt.tickEvent("pxtjson.backButton", undefined, { interactiveConsent: true })
+        this.parent.openPreviousEditor()
     }
 
     prepare() {
@@ -106,15 +112,39 @@ export class Editor extends srceditor.Editor {
             .filter(dep => !!dep && dep.isLoaded && !!dep.config && !!dep.config.yotta && !!dep.config.yotta.userConfigs)
             .forEach(dep => userConfigs = userConfigs.concat(dep.config.yotta.userConfigs));
 
+        const gitJsonText = pkg.mainEditorPkg().getAllFiles()[pxt.github.GIT_JSON]
+        const gitJson = JSON.parse(gitJsonText || "{}") as pxt.github.GitJson
+        let gitLink = ""
+        let gitDesc = ""
+        let gitVer = "???"
+        let gitVerLink = "#"
+
+        if (gitJson.repo) {
+            const parsed = pxt.github.parseRepoId(gitJson.repo)
+            gitLink = "https://github.com/" + parsed.fullName
+            gitDesc = parsed.fullName
+            if (parsed.tag && parsed.tag != "master") {
+                gitLink += "/tree/" + parsed.tag
+                gitDesc += "#" + parsed.tag
+            }
+            if (gitJson.commit) {
+                gitVer = gitJson.commit.tag || gitJson.commit.sha.slice(0, 8)
+                gitVerLink = "https://github.com/" + parsed.fullName + "/commit/" + gitJson.commit.sha
+            }
+        }
+
         return (
             <div className="ui content">
                 <h3 className="ui small header">
                     <div className="content">
-                        {lf("Project Settings")}
+                        <sui.Button title={lf("Go back")} tabIndex={0} onClick={this.goBack} onKeyDown={sui.fireClickOnEnter}>
+                            <sui.Icon icon="arrow left" />
+                            <span className="ui text landscape only">{lf("Go back")}</span>
+                        </sui.Button>
                     </div>
                 </h3>
                 <div className="ui segment form text">
-                    <sui.Input ref={this.handleNameInputRef} id={"fileNameInput"} label={lf("Name")} ariaLabel={lf("Type a name for your project")} value={c.name || ''} onChange={this.setFileName} />
+                    <sui.Input ref={this.handleNameInputRef} id={"fileNameInput"} label={lf("Name")} ariaLabel={lf("Type a name for your project")} value={c.name || ''} onChange={this.setFileName} autoComplete={false} />
                     {userConfigs.map(uc =>
                         <UserConfigCheckbox
                             key={`userconfig-${uc.description}`}
@@ -122,6 +152,17 @@ export class Editor extends srceditor.Editor {
                             isUserConfigActive={this.isUserConfigActive}
                             applyUserConfig={this.applyUserConfig} />
                     )}
+                    {!gitLink ? undefined :
+                        <p>
+                            {lf("Source repository: ")}
+                            <a target="_blank" href={gitLink} rel="noopener noreferrer">
+                                {gitDesc}
+                            </a>
+                            {lf("; version ")}
+                            <a target="_blank" href={gitVerLink} rel="noopener noreferrer">
+                                {gitVer}
+                            </a>
+                        </p>}
                     <sui.Field>
                         <sui.Button text={lf("Save")} className={`green ${this.isSaving ? 'disabled' : ''}`} onClick={this.save} />
                         <sui.Button text={lf("Edit Settings As text")} onClick={this.editSettingsText} />

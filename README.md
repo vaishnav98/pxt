@@ -1,8 +1,9 @@
 # Microsoft MakeCode
 
-* [Try it live!](https://makecode.com)
+* [Try out the editors in your browser...](https://makecode.com)
 
-[![Build Status](https://travis-ci.org/Microsoft/pxt.svg?branch=master)](https://travis-ci.org/Microsoft/pxt)
+[![Build Status](https://travis-ci.org/Microsoft/pxt.svg?branch=master)](https://travis-ci.org/Microsoft/pxt) 
+[![Community Discord](https://img.shields.io/discord/448979533891371018.svg)](https://aka.ms/makecodecommunity)
 
 Microsoft MakeCode is based on the open source project [Microsoft Programming Experience Toolkit (PXT)](https://github.com/Microsoft/pxt). ``Microsoft MakeCode`` is the name in the user-facing editors, ``PXT`` is used in all the GitHub sources.
 
@@ -96,7 +97,7 @@ browser tests. To execute them, run `npm run test:all` in the root directory.
 
 ## License
 
-MIT
+[MIT License](https://github.com/Microsoft/pxt/blob/master/LICENSE)
 
 ## Code of Conduct
 

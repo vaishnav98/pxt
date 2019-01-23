@@ -3,6 +3,7 @@
 Sections of document can be named by adding ``#some-name`` after a section header.
 These will be used as the `id` attribute of the corresponding `<hX>` tag, so they
 can be used in links.
+
 For example:
 
 ```markdown
@@ -31,6 +32,16 @@ This will result in:
 ...
 ```
 
+And the following URLs will link directly to the above anchors, respectively:
+
+```
+https://makecode.com/path/to/doc#ex`
+https://makecode.com/path/to/doc#ex2`
+https://makecode.com/path/to/doc#also`
+```
+
+> **Note:** Only one anchor can be used per header.
+
 The section span ends when a header with the same or smaller number
 of `#` in front is found. This isn't relevant for plain HTML, but
 matters when overriding sections (see below).
@@ -41,4 +52,4 @@ and section `also` contains the See also paragraph.
 
 ## Accessible sections
 
-In order to assist navigation into and out of subsections (using assistive technologies like screen readers), keep the section levels in sequenece. This means that a section immediatlely following a `#` begins with a `##` and not a `###`. The same sequencing applies to down level sections too.
+In order to assist navigation into and out of subsections (using assistive technologies like screen readers), keep the section levels in sequence. This means that a section immediately following a `#` begins with a `##` and not a `###`. The same sequencing applies to down level sections too.

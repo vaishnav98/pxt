@@ -67,8 +67,8 @@
    Form Input
 ---------------*/
 
-@inputPlaceholderColor: lighten(@inputColor, 25);
-@inputPlaceholderFocusColor: lighten(@inputColor, 10);
+@inputPlaceholderColor: lighten(@inputColor, 45);
+@inputPlaceholderFocusColor: lighten(@inputColor, 35);
 
 /*-------------------
      Neutral Text
@@ -90,8 +90,8 @@
     Scroll Bars
 --------------------*/
 
-@useCustomScrollbars: true;
-@customScrollbarWidth: 6px;
+@useCustomScrollbars: false;
+@customScrollbarWidth: 7px;
 
 @thumbBackground: rgba(0, 0, 0, 0.25);
 @thumbInvertedBackground: rgba(255, 255, 255, 0.25);
@@ -105,6 +105,9 @@
 
 @fileLogoUrl: "../docs/static/filelogo.svg";
 @fileLogo: data-uri(@fileLogoUrl);
+
+@githubFileLogoUrl: "../docs/static/githubfilelogo.svg";
+@githubFileLogo: data-uri(@githubFileLogoUrl);
 
 @loaderImageUrl: "../docs/static/loader.svg";
 @loaderImage: data-uri(@loaderImageUrl);
@@ -169,6 +172,15 @@
 @fullscreenBackgroundGradientEnd: @simulatorBackground;
 
 /*-------------------
+   Extensions
+--------------------*/
+
+@extensionsHeaderBackground: @mainMenuInvertedBackground;
+@extensionsSecondaryBackground: fade(@extensionsHeaderBackground, 30%);
+@extensionsBackground: @blocklySvgColor;
+@extensionsHeaderColor: white;
+
+/*-------------------
    Side Docs
 --------------------*/
 
@@ -223,7 +235,7 @@
 @blocklyFlyoutColor: @grey;
 @blocklyFlyoutColorOpacity: 0.9;
 @monacoFlyoutColor: fade(@blocklyFlyoutColor, 90%);
-
+@blocklyFlyoutButtonColor: @primaryColor;
 
 /*-------------------
    Home
@@ -250,6 +262,7 @@
 @homeDetailViewBackground: darken(@homeScreenBackground, 10%);
 @homeDetailViewColor: @homeCardColor;
 @homeDetailCloseColor: white;
+@homeDetailCloseBackground: @grey;
 
 /*-------------------
    Tutorial

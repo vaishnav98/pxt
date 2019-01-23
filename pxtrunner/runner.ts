@@ -12,6 +12,7 @@ namespace pxt.runner {
         code?: string;
         highContrast?: boolean;
         light?: boolean;
+        fullScreen?: boolean;
     }
 
     class EditorPackage {
@@ -154,7 +155,6 @@ namespace pxt.runner {
         const cfg = pxt.webConfig
         return Util.updateLocalizationAsync(
             pxt.appTarget.id,
-            true,
             cfg.commitCdnUrl, lang,
             versions ? versions.pxtCrowdinBranch : "",
             versions ? versions.targetCrowdinBranch : "",
@@ -186,16 +186,33 @@ namespace pxt.runner {
         console.error(msg)
     }
 
+    let previousMainPackage: pxt.MainPackage = undefined;
     function loadPackageAsync(id: string, code?: string) {
-        let host = mainPkg.host();
-        mainPkg = new pxt.MainPackage(host)
-        mainPkg._verspec = id ? /\w+:\w+/.test(id) ? id : "pub:" + id : "empty:tsprj"
+        const verspec = id ? /\w+:\w+/.test(id) ? id : "pub:" + id : "empty:tsprj";
+        let host: pxt.Host;
+        let downloadPackagePromise: Promise<void>;
+        let installPromise: Promise<void>;
+        if (previousMainPackage && previousMainPackage._verspec == verspec) {
+            mainPkg = previousMainPackage;
+            host = mainPkg.host();
+            downloadPackagePromise = Promise.resolve();
+            installPromise = Promise.resolve();
+        } else {
+            host = mainPkg.host();
+            mainPkg = new pxt.MainPackage(host)
+            mainPkg._verspec = id ? /\w+:\w+/.test(id) ? id : "pub:" + id : "empty:tsprj"
+            downloadPackagePromise = host.downloadPackageAsync(mainPkg);
+            installPromise = mainPkg.installAllAsync()
+            // cache previous package
+            previousMainPackage = mainPkg;
+        }
 
-        return host.downloadPackageAsync(mainPkg)
+
+        return downloadPackagePromise
             .then(() => host.readFile(mainPkg, pxt.CONFIG_NAME))
             .then(str => {
                 if (!str) return Promise.resolve()
-                return mainPkg.installAllAsync().then(() => {
+                return installPromise.then(() => {
                     if (code) {
                         //Set the custom code if provided for docs.
                         let epkg = getEditorPkg(mainPkg);
@@ -212,7 +229,7 @@ namespace pxt.runner {
                         }
                     }
                 }).catch(e => {
-                    showError(lf("Cannot load package: {0}", e.message))
+                    showError(lf("Cannot load extension: {0}", e.message))
                 })
             });
     }
@@ -263,6 +280,12 @@ namespace pxt.runner {
                 let js = resp.outfiles[pxtc.BINARY_JS];
                 if (js) {
                     let options: pxsim.SimulatorDriverOptions = {};
+                    options.onSimulatorCommand = msg => {
+                        if (msg.command === "restart") {
+                            driver.run(js, runOptions);
+                        }
+                    };
+
                     let driver = new pxsim.SimulatorDriver(container, options);
 
                     let fnArgs = resp.usedArguments;
@@ -277,7 +300,7 @@ namespace pxt.runner {
                         highContrast: simOptions.highContrast,
                         light: simOptions.light
                     };
-                    if (pxt.appTarget.simulator)
+                    if (pxt.appTarget.simulator && !simOptions.fullScreen)
                         runOptions.aspectRatio = parts.length && pxt.appTarget.simulator.partsAspectRatio
                             ? pxt.appTarget.simulator.partsAspectRatio
                             : pxt.appTarget.simulator.aspectRatio;
@@ -291,17 +314,16 @@ namespace pxt.runner {
         TypeScript
     }
 
-    export let languageMode = LanguageMode.Blocks;
+    export let editorLanguageMode = LanguageMode.Blocks;
     export let editorLocale = "en";
 
     export function setEditorContextAsync(mode: LanguageMode, locale: string) {
-        languageMode = mode;
+        editorLanguageMode = mode;
         if (locale != editorLocale) {
             const localeLiveRx = /^live-/;
             editorLocale = locale;
             return pxt.Util.updateLocalizationAsync(
                 pxt.appTarget.id,
-                true,
                 pxt.webConfig.commitCdnUrl,
                 editorLocale.replace(localeLiveRx, ''),
                 pxt.appTarget.versions.pxtCrowdinBranch,
@@ -323,11 +345,12 @@ namespace pxt.runner {
                 setEditorContextAsync(/\.ts$/i.test(name) ? LanguageMode.TypeScript : LanguageMode.Blocks, fm.locale).done();
                 break;
             case "popout":
-                let mp = /#(doc|md):([^&?:]+)/i.exec(window.location.href);
+                let mp = /((\/v[0-9+])\/)?[^\/]*#(doc|md):([^&?:]+)/i.exec(window.location.href);
                 if (mp) {
                     const docsUrl = pxt.webConfig.docsUrl || '/--docs';
-                    let url = mp[1] == "doc" ? `${mp[2]}` : `${docsUrl}?md=${mp[2]}`;
-                    window.open(url, "_blank");
+                    let verPrefix = mp[2] || '';
+                    let url = mp[3] == "doc" ? (pxt.webConfig.isStatic ? `/docs${mp[4]}.html` : `${mp[4]}`) : `${docsUrl}?md=${mp[4]}`;
+                    window.open(BrowserUtils.urlJoin(verPrefix, url), "_blank");
                     // notify parent iframe that we have completed the popout
                     if (window.parent)
                         window.parent.postMessage(<pxsim.SimulatorDocsReadyMessage>{
@@ -375,11 +398,15 @@ namespace pxt.runner {
             const msg = jobQueue.shift();
             if (!msg) return; // no more work
 
+            const options = (msg.options || {}) as pxt.blocks.BlocksRenderOptions;
+            options.splitSvg = false; // don't split when requesting rendered images
             pxt.tickEvent("renderer.job")
             jobPromise = pxt.BrowserUtils.loadBlocklyAsync()
                 .then(() => runner.decompileToBlocksAsync(msg.code, msg.options))
-                .then(result => result.blocksSvg ? pxt.blocks.layout.blocklyToSvgAsync(result.blocksSvg, 0, 0, result.blocksSvg.viewBox.baseVal.width, result.blocksSvg.viewBox.baseVal.height) : undefined)
-                .then(res => {
+                .then(result => {
+                    const blocksSvg = result.blocksSvg as SVGSVGElement;
+                    return blocksSvg ? pxt.blocks.layout.blocklyToSvgAsync(blocksSvg, 0, 0, blocksSvg.viewBox.baseVal.width, blocksSvg.viewBox.baseVal.height) : undefined;
+                }).then(res => {
                     window.parent.postMessage(<pxsim.RenderBlocksResponseMessage>{
                         source: "makecode",
                         type: "renderblocks",
@@ -412,20 +439,31 @@ namespace pxt.runner {
             })
     }
 
-    export function startDocsServer(loading: HTMLElement, content: HTMLElement) {
+    export function startDocsServer(loading: HTMLElement, content: HTMLElement, backButton?: HTMLElement) {
         pxt.tickEvent("docrenderer.ready");
+
+        const history: string[] = [];
+
+        if (backButton) {
+            backButton.addEventListener("click", () => {
+                goBack();
+            });
+            pxsim.U.addClass(backButton, "disabled");
+        }
 
         function render(doctype: string, src: string) {
             pxt.debug(`rendering ${doctype}`);
+            if (backButton) $(backButton).hide()
             $(content).hide()
             $(loading).show()
+
             Promise.delay(100) // allow UI to update
                 .then(() => {
                     switch (doctype) {
                         case "print":
                             const data = window.localStorage["printjob"];
                             delete window.localStorage["printjob"];
-                            return renderProjectFilesAsync(content, JSON.parse(data))
+                            return renderProjectFilesAsync(content, JSON.parse(data), undefined, true)
                                 .then(() => pxsim.print(1000));
                         case "project":
                             return renderProjectFilesAsync(content, JSON.parse(src))
@@ -459,14 +497,42 @@ namespace pxt.runner {
                         }, "*");
                 }).finally(() => {
                     $(loading).hide()
+                    if (backButton) $(backButton).show()
                     $(content).show()
                 })
                 .done(() => { });
         }
 
+        function pushHistory() {
+            if (!backButton) return;
+
+            history.push(window.location.hash);
+            if (history.length > 10) {
+                history.shift();
+            }
+
+            if (history.length > 1) {
+                pxsim.U.removeClass(backButton, "disabled");
+            }
+        }
+
+        function goBack() {
+            if (!backButton) return;
+            if (history.length > 1) {
+                // Top is current page
+                history.pop();
+                window.location.hash = history.pop();
+            }
+
+            if (history.length <= 1) {
+                pxsim.U.addClass(backButton, "disabled");
+            }
+        }
+
         function renderHash() {
             let m = /^#(doc|md|tutorial|book|project|projectid|print):([^&?:]+)(:([^&?:]+):([^&?:]+))?/i.exec(window.location.hash);
             if (m) {
+                pushHistory();
                 // navigation occured
                 const p = m[4] ? setEditorContextAsync(
                     /^blocks$/.test(m[4]) ? LanguageMode.Blocks : LanguageMode.TypeScript,
@@ -488,24 +554,16 @@ namespace pxt.runner {
         })
     }
 
-    export function renderProjectAsync(content: HTMLElement, projectid: string, template = "blocks"): Promise<void> {
+    export function renderProjectAsync(content: HTMLElement, projectid: string): Promise<void> {
         return Cloud.privateGetTextAsync(projectid + "/text")
             .then(txt => JSON.parse(txt))
-            .then(files => renderProjectFilesAsync(content, files, projectid, template));
+            .then(files => renderProjectFilesAsync(content, files, projectid));
     }
 
-    export function renderProjectFilesAsync(content: HTMLElement, files: Map<string>, projectid: string = null, template = "blocks"): Promise<void> {
+    export function renderProjectFilesAsync(content: HTMLElement, files: Map<string>, projectid: string = null, escapeLinks = false): Promise<void> {
         const cfg = (JSON.parse(files[pxt.CONFIG_NAME]) || {}) as PackageConfig;
 
         let md = `# ${cfg.name} ${cfg.version ? cfg.version : ''}
-
-`;
-        if (projectid)
-            md += `* ${pxt.appTarget.appTheme.shareUrl || "https://makecode.com/"}${projectid}
-
-`;
-        else
-            md += `* ${pxt.appTarget.appTheme.homeUrl}
 
 `;
         const readme = "README.md";
@@ -513,8 +571,10 @@ namespace pxt.runner {
             md += files[readme].replace(/^#+/, "$0#") + '\n'; // bump all headers down 1
 
         cfg.files.filter(f => f != pxt.CONFIG_NAME && f != readme)
+            .filter(f => (editorLanguageMode == LanguageMode.Blocks) == /\.blocks?$/.test(f))
             .forEach(f => {
-                md += `
+                if (!/^main\.(ts|blocks)$/.test(f))
+                    md += `
 ## ${f}
 `;
                 if (/\.ts$/.test(f)) {
@@ -535,17 +595,31 @@ ${files[f]}
                 }
             });
 
-        if (cfg && cfg.dependencies) {
+        const deps = cfg && cfg.dependencies && Object.keys(cfg.dependencies).filter(k => k != pxt.appTarget.corepkg);
+        if (deps && deps.length) {
             md += `
-## Packages
+## ${lf("Extensions")} #extensions
 
-${Object.keys(cfg.dependencies).map(k => `* ${k}, ${cfg.dependencies[k]}`).join('\n')}
+${deps.map(k => `* ${k}, ${cfg.dependencies[k]}`).join('\n')}
 
 \`\`\`package
-${Object.keys(cfg.dependencies).map(k => `${k}=${cfg.dependencies[k]}`).join('\n')}
+${deps.map(k => `${k}=${cfg.dependencies[k]}`).join('\n')}
 \`\`\`
 `;
         }
+
+        if (projectid) {
+            let linkString = (pxt.appTarget.appTheme.shareUrl || "https://makecode.com/") + projectid;
+            if (escapeLinks) {
+                // If printing the link will show up twice if it's an actual link
+                linkString = "`" + linkString + "`";
+            }
+            md += `
+${linkString}
+
+`;
+        }
+        console.debug(`print md: ${md}`);
         const options: RenderMarkdownOptions = {
             print: true
         }
@@ -554,7 +628,7 @@ ${Object.keys(cfg.dependencies).map(k => `${k}=${cfg.dependencies[k]}`).join('\n
 
     function renderDocAsync(content: HTMLElement, docid: string): Promise<void> {
         docid = docid.replace(/^\//, "");
-        return pxt.Cloud.downloadMarkdownAsync(docid, editorLocale, pxt.Util.localizeLive)
+        return pxt.Cloud.markdownAsync(docid, editorLocale, pxt.Util.localizeLive)
             .then(md => renderMarkdownAsync(content, md, { path: docid }))
     }
 
@@ -570,7 +644,7 @@ ${Object.keys(cfg.dependencies).map(k => `${k}=${cfg.dependencies[k]}`).join('\n
         // start the work
         let toc: TOCMenuEntry[];
         return Promise.delay(100)
-            .then(() => pxt.Cloud.downloadMarkdownAsync(summaryid, editorLocale, pxt.Util.localizeLive))
+            .then(() => pxt.Cloud.markdownAsync(summaryid, editorLocale, pxt.Util.localizeLive))
             .then(summary => {
                 toc = pxt.docs.buildTOC(summary);
                 pxt.log(`TOC: ${JSON.stringify(toc, null, 2)}`)
@@ -578,7 +652,7 @@ ${Object.keys(cfg.dependencies).map(k => `${k}=${cfg.dependencies[k]}`).join('\n
                 pxt.docs.visitTOC(toc, entry => {
                     if (!/^\//.test(entry.path) || /^\/pkg\//.test(entry.path)) return;
                     tocsp.push(
-                        pxt.Cloud.downloadMarkdownAsync(entry.path, editorLocale, pxt.Util.localizeLive)
+                        pxt.Cloud.markdownAsync(entry.path, editorLocale, pxt.Util.localizeLive)
                             .then(md => {
                                 entry.markdown = md;
                             }, e => {
@@ -676,13 +750,10 @@ ${Object.keys(cfg.dependencies).map(k => `${k}=${cfg.dependencies[k]}`).join('\n
     }
 
     export function renderMarkdownAsync(content: HTMLElement, md: string, options: RenderMarkdownOptions = {}): Promise<void> {
-        const path = options.path;
-        const parts = (path || '').split('/');
-
         const html = pxt.docs.renderMarkdown({
             template: template,
             markdown: md,
-            theme: pxt.appTarget.appTheme,
+            theme: pxt.appTarget.appTheme
         });
         let blocksAspectRatio = options.blocksAspectRatio
             || window.innerHeight < window.innerWidth ? 1.62 : 1 / 1.62;
@@ -704,7 +775,7 @@ ${Object.keys(cfg.dependencies).map(k => `${k}=${cfg.dependencies[k]}`).join('\n
             simulator: true,
             hex: true,
             tutorial: !!options.tutorial,
-            showJavaScript: languageMode == LanguageMode.TypeScript,
+            showJavaScript: editorLanguageMode == LanguageMode.TypeScript,
             hexName: pxt.appTarget.id
         }
         if (options.print) {
@@ -723,11 +794,14 @@ ${Object.keys(cfg.dependencies).map(k => `${k}=${cfg.dependencies[k]}`).join('\n
 
     export interface DecompileResult {
         package: pxt.MainPackage;
+        compileProgram?: ts.Program;
         compileJS?: pxtc.CompileResult;
         compileBlocks?: pxtc.CompileResult;
         apiInfo?: pxtc.ApisInfo;
-        blocksSvg?: SVGSVGElement;
+        blocksSvg?: Element;
     }
+
+    let programCache: ts.Program;
 
     export function decompileToBlocksAsync(code: string, options?: blocks.BlocksRenderOptions): Promise<DecompileResult> {
         // code may be undefined or empty!!!
@@ -741,33 +815,46 @@ ${Object.keys(cfg.dependencies).map(k => `${k}=${cfg.dependencies[k]}`).join('\n
                 if (code)
                     opts.fileSystem["main.ts"] = code;
                 opts.ast = true
-                let resp = pxtc.compile(opts)
-                if (resp.diagnostics && resp.diagnostics.length > 0)
-                    resp.diagnostics.forEach(diag => console.error(diag.messageText));
-                if (!resp.success)
-                    return Promise.resolve<DecompileResult>({ package: mainPkg, compileJS: resp });
+
+                let compileJS: pxtc.CompileResult = undefined;
+                let program: ts.Program;
+                if (options && options.forceCompilation) {
+                    compileJS = pxtc.compile(opts);
+                    program = compileJS && compileJS.ast;
+                } else {
+                    program = pxtc.getTSProgram(opts, programCache);
+                }
+                programCache = program;
 
                 // decompile to blocks
-                let apis = pxtc.getApiInfo(opts, resp.ast);
+                let apis = pxtc.getApiInfo(opts, program);
                 return ts.pxtc.localizeApisAsync(apis, mainPkg)
                     .then(() => {
                         let blocksInfo = pxtc.getBlocksInfo(apis);
                         pxt.blocks.initializeAndInject(blocksInfo);
                         let bresp = pxtc.decompiler.decompileToBlocks(
                             blocksInfo,
-                            resp.ast.getSourceFile("main.ts"),
+                            program.getSourceFile("main.ts"),
                             { snippetMode: options && options.snippetMode })
                         if (bresp.diagnostics && bresp.diagnostics.length > 0)
                             bresp.diagnostics.forEach(diag => console.error(diag.messageText));
                         if (!bresp.success)
-                            return <DecompileResult>{ package: mainPkg, compileJS: resp, compileBlocks: bresp, apiInfo: apis };
+                            return <DecompileResult>{
+                                package: mainPkg,
+                                compileProgram: program,
+                                compileJS,
+                                compileBlocks: bresp,
+                                apiInfo: apis
+                            };
                         pxt.debug(bresp.outfiles["main.blocks"])
+                        const blocksSvg = pxt.blocks.render(bresp.outfiles["main.blocks"], options);
                         return <DecompileResult>{
                             package: mainPkg,
-                            compileJS: resp,
+                            compileProgram: program,
+                            compileJS,
                             compileBlocks: bresp,
                             apiInfo: apis,
-                            blocksSvg: pxt.blocks.render(bresp.outfiles["main.blocks"], options)
+                            blocksSvg
                         };
                     })
             });

@@ -29,7 +29,7 @@ namespace pxt.winrt {
     }
 
     export function initAsync(importHexImpl?: (hex: pxt.cpp.HexFile, createNewIfFailed?: boolean) => void) {
-        if (!isWinRT()) return Promise.resolve();
+        if (!isWinRT() || pxt.BrowserUtils.isIFrame()) return Promise.resolve();
 
         const uiCore = Windows.UI.Core;
         const navMgr = uiCore.SystemNavigationManager.getForCurrentView();

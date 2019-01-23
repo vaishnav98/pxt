@@ -1,5 +1,69 @@
 # Microsoft MakeCode Blog
 
+## [MakeCode Arcade: Retro Gaming, Modern Programming](/blog/arcade/01-18-2019)
+
+January 18th, 2019 by Microsoft MakeCode Team
+
+The MakeCode team is excited to announce a completely new retro gaming experience, 
+spanning the worlds of the web browser and the microcontroller!
+**[Continue reading this blog post](/blog/arcade/01-18-2019)**
+
+## [Cartoon Network Projects for the Adafruit Circuit Playground Express!](/blog/adafruit-circuit-playground-express/cn-projects)
+ 
+January 7th, 2019 by [Jaqster](https://github.com/jaqster)
+
+Happy New Year! And what better way to start 2019 than with a series of brand-new projects for Circuit Playground Express inspired by Cartoon Network!
+**[Continue reading this blog post](/blog/adafruit-circuit-playground-express/cn-projects)**
+
+## [New Maker Course for the Adafruit Circuit Playground Express!](/blog/adafruit-circuit-playground-express/maker-course)
+ 
+December 6th, 2018 by [Jaqster](https://github.com/jaqster)
+
+We are so excited to partner with Rob Morrill on this new curriculum for the Adafruit Circuit Playground Express...
+**[Continue reading this blog post](/blog/adafruit-circuit-playground-express/maker-course)**
+
+## [MakeCode for Minecraft update](/blog/minecraft/11-07-2018)
+ 
+November 7th, 2018 by [Jaqster](https://github.com/jaqster)
+
+Another month, another release! The MakeCode team is very excited to release this update to the coding experience for Minecraft.
+**[Continue reading this blog post](/blog/minecraft/11-07-2018)**
+
+## [MakeCode tutorials for CS Ed week 2018 and beyond](/blog/csed-week/csed-week-2018)
+ 
+October 23th, 2018 by [Jaqster](https://github.com/jaqster)
+ 
+With Computer Science Education week just around the corner, we’ve compiled a list of some of our favorite tutorials, guides, and projects...
+**[Continue reading this blog post](/blog/csed-week/csed-week-2018)**
+ 
+## [MakeCode for the micro:bit update releases on October 26th!](/blog/microbit/v1-release-date)
+
+October 12th, 2018 by [Jaqster](https://github.com/jaqster)
+
+Mark your calendars and buy a cake. The new MakeCode for micro:bit editor will be released on Friday October 26th!
+**[Continue reading this blog post](/blog/microbit/v1-release-date)**
+
+## [GitHub package/extension authoring](/blog/github-packages)
+
+August 1st, 2018 by [mmoskal](https://github.com/mmoskal)
+
+You can now create and edit MakeCode packages (extensions) hosted on GitHub directly from the browser!
+**[Continue reading this blog post](/blog/github-packages)**
+
+## [MakeCode for the micro:bit update coming soon!](/blog/microbit/v1-beta)
+
+July 23th, 2018 by [Jaqster](https://github.com/jaqster)
+
+The MakeCode team has been working to provide a summer update to its micro:bit editor You can preview the update at...
+**[Continue reading this blog post](/blog/microbit/v1-beta)**
+
+## [MakeCode @ISTE 2018](/blog/iste/iste-2018)
+
+June 11th, 2018 by [Jaqster](https://github.com/jaqster)
+
+The MakeCode team is heading out to the Windy City ([Chicago](https://www.choosechicago.com/)) at the end of June, and we couldn’t be more excited. We’ve got some nice sessions lined up and would love to see you there...
+**[Continue reading this blog post](/blog/iste/iste-2018)**
+
 ## [MakeCode for LEGO MINDSTORMS](/blog/lego/05-15-2018)
 
 May 15th, 2018 by [Jaqster](https://github.com/jaqster)

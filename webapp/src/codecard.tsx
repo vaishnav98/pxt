@@ -71,6 +71,8 @@ export class CodeCardView extends data.Component<pxt.CodeCard, CodeCardState> {
         const cardType = card.cardType;
 
         const clickHandler = card.onClick ? (e: any) => {
+            if (e.target && e.target.tagName == "A")
+                return;
             pxt.analytics.enableCookies();
             card.onClick(e);
         } : undefined;
@@ -91,13 +93,17 @@ export class CodeCardView extends data.Component<pxt.CodeCard, CodeCardState> {
                     </div>
                     {card.header}
                 </div> : null}
-            {card.label || card.blocksXml || card.typeScript || imageUrl || cardType == "file" ? <div className={"ui image"}>
-                {card.label ? <label className={`ui ${card.labelClass ? card.labelClass : "orange right ribbon"} label`}>{card.label}</label> : undefined}
+            {card.label || card.labelIcon || card.blocksXml || card.typeScript || imageUrl || cardType == "file" ? <div className={"ui image"}>
+                {card.label || card.labelIcon ?
+                    <label role={card.onLabelClicked ? 'button' : undefined} onClick={card.onLabelClicked}
+                        className={`ui ${card.labelClass ? card.labelClass : "orange right ribbon"} label`}>
+                    {card.labelIcon ? <sui.Icon icon={card.labelIcon} /> : card.label}</label> : undefined}
                 {card.typeScript ? <pre key="promots">{card.typeScript}</pre> : undefined}
-                {imageUrl ? <div className="ui imagewrapper">
+                {card.cardType != "file" && imageUrl ? <div className="ui imagewrapper">
                     <div className={`ui cardimage`} data-src={imageUrl} ref="lazyimage" />
                 </div> : undefined}
-                {card.cardType == "file" ? <div className="ui fileimage" /> : undefined}
+                {card.cardType == "file" && !imageUrl ? <div className="ui fileimage" /> : undefined}
+                {card.cardType == "file" && imageUrl ? <div className="ui fileimage" data-src={imageUrl} ref="lazyimage" /> : undefined}
             </div> : undefined}
             {card.icon || card.iconContent ?
                 <div className="ui imagewrapper"><div className={`ui button massive fluid ${card.iconColor} ${card.iconContent ? "iconcontent" : ""}`}>
@@ -112,7 +118,25 @@ export class CodeCardView extends data.Component<pxt.CodeCard, CodeCardState> {
             {card.time ? <div className="meta">
                 {card.time ? <span key="date" className="date">{pxt.Util.timeSince(card.time)}</span> : null}
             </div> : undefined}
-            {card.extracontent ? <div className="extra content"> {card.extracontent} </div> : undefined}
+            {card.extracontent || card.learnMoreUrl || card.buyUrl || card.feedbackUrl ?
+                <div className="ui extra content widedesktop only">
+                    {card.extracontent}
+                    {card.buyUrl ?
+                        <a className="learnmore left floated" href={card.buyUrl}
+                            aria-label={lf("Buy")} target="_blank" rel="noopener noreferrer">
+                            {lf("Buy")}
+                        </a> : undefined}
+                    {card.learnMoreUrl ?
+                        <a className="learnmore right floated" href={card.learnMoreUrl}
+                            aria-label={lf("Learn more")} target="_blank" rel="noopener noreferrer">
+                            {lf("Learn more")}
+                        </a> : undefined}
+                    {card.feedbackUrl ?
+                        <a className="learnmore right floated" href={card.feedbackUrl}
+                            aria-label={lf("Feedback")} target="_blank" rel="noopener noreferrer">
+                            {lf("Feedback")}
+                        </a> : undefined}
+                </div> : undefined}
         </div>;
 
         if (!card.onClick && url) {

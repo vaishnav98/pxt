@@ -7,9 +7,10 @@ import * as core from "./core";
 import * as toolboxeditor from "./toolboxeditor"
 import * as compiler from "./compiler"
 import * as sui from "./sui";
-import * as data from "./data";
 import * as snippets from "./monacoSnippets"
 import * as toolbox from "./toolbox";
+import * as workspace from "./workspace";
+import { ViewZoneEditorHost, FieldEditorManager } from "./monacoFieldEditorHost";
 
 import Util = pxt.Util;
 
@@ -22,15 +23,36 @@ enum FileType {
     Markdown
 }
 
+/**
+ * These are internal APIs that will likely need to be changed if the Monaco
+ * version changes. Monaco now supports language service based folding, so
+ * this should probably be removed in favor of that.
+ */
+interface FoldingController extends monaco.editor.IEditorContribution {
+    onModelChanged(): void;
+    unfold(levels: number): void;
+    fold(levels: number, up: boolean): void;
+    foldAll(): void;
+    unfoldAll(): void;
+    foldLevel(foldLevel: number, selectedLineNumbers: number[]): void;
+    foldUnfoldRecursively(isFold: boolean): void;
+}
+
+
 export class Editor extends toolboxeditor.ToolboxEditor {
     editor: monaco.editor.IStandaloneCodeEditor;
     currFile: pkg.File;
     fileType: FileType = FileType.Unknown;
     extraLibs: pxt.Map<monaco.IDisposable>;
     public nsMap: pxt.Map<toolbox.BlockDefinition[]>;
-    loadedMonaco: boolean;
-    loadingMonaco: boolean;
+    private _loadMonacoPromise: Promise<void>;
     giveFocusOnLoading: boolean = false;
+
+    protected fieldEditors: FieldEditorManager;
+    protected feWidget: ViewZoneEditorHost;
+    protected foldFieldEditorRanges = true;
+    protected activeRangeID: number;
+    protected hasFieldEditors = !!(pxt.appTarget.appTheme.monacoFieldEditors && pxt.appTarget.appTheme.monacoFieldEditors.length);
 
     hasBlocks() {
         if (!this.currFile) return true
@@ -240,7 +262,7 @@ export class Editor extends toolboxeditor.ToolboxEditor {
     }
 
     setHighContrast(hc: boolean) {
-        if (this.loadedMonaco) this.defineEditorTheme(hc, true);
+        if (this._loadMonacoPromise) this.defineEditorTheme(hc, true);
     }
 
     beforeCompile() {
@@ -261,15 +283,13 @@ export class Editor extends toolboxeditor.ToolboxEditor {
 
         if (monacoArea && this.editor) {
             const toolboxWidth = monacoToolboxDiv && monacoToolboxDiv.offsetWidth || 0;
-            this.editor.layout({ width: monacoArea.offsetWidth - toolboxWidth, height: monacoArea.offsetHeight });
 
             const rgba = (this.editor as any)._themeService._theme.colors['editor.background'].rgba;
-            this.parent.updateEditorLogo(toolboxWidth, `rgba(${rgba.r},${rgba.g},${rgba.b},${rgba.a})`);
+            const logoHeight = (this.parent.isJavaScriptActive()) ? this.parent.updateEditorLogo(toolboxWidth, `rgba(${rgba.r},${rgba.g},${rgba.b},${rgba.a})`) : 0;
 
-            let toolboxHeight = this.editor ? this.editor.getLayoutInfo().contentHeight : 0;
-            if (monacoToolboxDiv) {
-                monacoToolboxDiv.style.height = `${toolboxHeight}px`;
-            }
+            this.editor.layout({ width: monacoArea.offsetWidth - toolboxWidth, height: monacoArea.offsetHeight - logoHeight });
+
+            if (monacoToolboxDiv) monacoToolboxDiv.style.height = `100%`;
         }
     }
 
@@ -278,17 +298,18 @@ export class Editor extends toolboxeditor.ToolboxEditor {
     }
 
     public loadMonacoAsync(): Promise<void> {
-        if (this.editor || this.loadingMonaco) return Promise.resolve();
-        this.loadingMonaco = true;
-        this.extraLibs = Object.create(null);
+        if (!this._loadMonacoPromise)
+            this._loadMonacoPromise = this.createLoadMonacoPromise();
+        return this._loadMonacoPromise;
+    }
 
+    private createLoadMonacoPromise(): Promise<void> {
+        this.extraLibs = Object.create(null);
         let editorArea = document.getElementById("monacoEditorArea");
         let editorElement = document.getElementById("monacoEditorInner");
 
         return pxt.vs.initMonacoAsync(editorElement).then((editor) => {
             this.editor = editor;
-            this.loadingMonaco = false;
-            this.loadedMonaco = true;
 
             this.editor.updateOptions({ fontSize: this.parent.settings.editorFontSize });
 
@@ -364,11 +385,10 @@ export class Editor extends toolboxeditor.ToolboxEditor {
             }
 
             // Accessibility shortcut, add a way to quickly jump to the monaco toolbox
-            const arrow = Util.isUserLanguageRtl() ? monaco.KeyCode.RightArrow : monaco.KeyCode.LeftArrow;
             this.editor.addAction({
                 id: "jumptoolbox",
                 label: lf("Jump to Toolbox"),
-                keybindings: [monaco.KeyMod.CtrlCmd | arrow],
+                keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KEY_T],
                 keybindingContext: "!editorReadonly",
                 precondition: "!editorReadonly",
                 run: () => Promise.resolve(this.moveFocusToToolbox())
@@ -452,6 +472,7 @@ export class Editor extends toolboxeditor.ToolboxEditor {
             this.editorViewZones = [];
 
             this.setupToolbox(editorArea);
+            this.setupFieldEditors();
         })
     }
 
@@ -511,6 +532,7 @@ export class Editor extends toolboxeditor.ToolboxEditor {
     private setupToolbox(editorElement: HTMLElement) {
         // Monaco flyout widget
         let flyoutWidget = {
+            domNode: null as HTMLElement,
             getId: function (): string {
                 return 'pxt.flyout.widget';
             },
@@ -533,6 +555,48 @@ export class Editor extends toolboxeditor.ToolboxEditor {
         this.editor.addOverlayWidget(flyoutWidget);
     }
 
+    private setupFieldEditors() {
+        if (!this.hasFieldEditors || pxt.shell.isReadOnly()) return;
+        if (!this.fieldEditors) this.fieldEditors = new FieldEditorManager();
+
+        pxt.appTarget.appTheme.monacoFieldEditors.forEach(name => {
+            const editor = pxt.editor.getMonacoFieldEditor(name);
+            if (editor) {
+                this.fieldEditors.addFieldEditor(editor);
+            }
+            else {
+                pxt.debug("Skipping unknown monaco field editor '" + name + "'");
+            }
+        })
+
+        this.editor.onMouseDown((e: monaco.editor.IEditorMouseEvent) => {
+            if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
+                return;
+            }
+            const line = e.target.position.lineNumber;
+            const model = this.editor.getModel();
+            const decorations = model.getDecorationsInRange(new monaco.Range(line, model.getLineMinColumn(line), line, model.getLineMaxColumn(line)));
+            if (decorations.length) {
+                const lineInfo = this.fieldEditors.getInfoForLine(line);
+                if (lineInfo) {
+                    if (this.feWidget && this.activeRangeID != null && lineInfo.id === this.activeRangeID) {
+                        this.feWidget.close();
+                        this.activeRangeID = null;
+                        return;
+                    }
+                    else {
+                        this.activeRangeID = lineInfo.id;
+                    }
+
+                    const fe = this.fieldEditors.getFieldEditorById(lineInfo.owner);
+                    if (fe) {
+                        this.showFieldEditor(lineInfo.range, new fe.proto(), fe.heightInPixels || 500);
+                    }
+                }
+            }
+        });
+    }
+
     public closeFlyout() {
         if (!this.editor) return;
         this.hideFlyout();
@@ -541,11 +605,14 @@ export class Editor extends toolboxeditor.ToolboxEditor {
     private hideFlyout() {
         // Hide the flyout
         let flyout = document.getElementById('monacoFlyoutWidget');
-        pxsim.U.clear(flyout);
-        flyout.style.display = 'none';
+        if (flyout) {
+            pxsim.U.clear(flyout);
+            flyout.style.display = 'none';
+        }
 
         // Hide the current toolbox category
-        this.toolbox.clearSelection();
+        if (this.toolbox)
+            this.toolbox.clearSelection();
 
         // Clear editor floats
         this.parent.setState({ hideEditorFloats: false });
@@ -558,11 +625,16 @@ export class Editor extends toolboxeditor.ToolboxEditor {
         //this.editor.getLayoutInfo().glyphMarginLeft = 200;
         this.editor.layout();
 
-        this.toolbox.setState({
-            loading: false,
-            categories: this.getAllCategories(),
-            showSearchBox: this.shouldShowSearch()
-        })
+        if (this.toolbox)
+            this.toolbox.setState({
+                loading: false,
+                categories: this.getAllCategories(),
+                showSearchBox: this.shouldShowSearch()
+            })
+    }
+
+    private getFoldingController(): FoldingController {
+        return this.editor.getContribution("editor.contrib.folding") as FoldingController
     }
 
     getId() {
@@ -604,6 +676,9 @@ export class Editor extends toolboxeditor.ToolboxEditor {
             .then(() => {
                 if (!this.editor) return;
 
+                this.foldFieldEditorRanges = true;
+                this.updateFieldEditors();
+
                 let ext = file.getExtension()
                 let modeMap: any = {
                     "cpp": "cpp",
@@ -627,11 +702,16 @@ export class Editor extends toolboxeditor.ToolboxEditor {
                 if (model) this.editor.setModel(model);
 
                 this.defineEditorTheme(hc);
-                const shouldShowToolbox = (mode == "typescript" && pxt.appTarget.appTheme.monacoToolbox && !readOnly);
+                const shouldShowToolbox = (
+                    mode == "typescript"
+                    && pxt.appTarget.appTheme.monacoToolbox
+                    && !readOnly
+                    && file.name == "main.ts");
                 if (shouldShowToolbox) {
                     this.beginLoadToolbox(file, hc);
                 } else {
-                    this.toolbox.hide();
+                    if (this.toolbox)
+                        this.toolbox.hide();
                 }
 
                 // Set the current file
@@ -671,6 +751,7 @@ export class Editor extends toolboxeditor.ToolboxEditor {
                         }
                         this.updateDiagnostics();
                         this.changeCallback();
+                        this.updateFieldEditors();
                     });
                 }
 
@@ -693,7 +774,8 @@ export class Editor extends toolboxeditor.ToolboxEditor {
     }
 
     unloadFileAsync(): Promise<void> {
-        this.toolbox.clearSearch();
+        if (this.toolbox)
+            this.toolbox.clearSearch();
         if (this.currFile && this.currFile.getName() == "this/" + pxt.CONFIG_NAME) {
             // Reload the header if a change was made to the config file: pxt.json
             return this.parent.reloadHeaderAsync();
@@ -702,7 +784,8 @@ export class Editor extends toolboxeditor.ToolboxEditor {
     }
 
     private beginLoadToolbox(file: pkg.File, hc?: boolean) {
-        this.toolbox.showLoading();
+        if (this.toolbox)
+            this.toolbox.showLoading();
         compiler.getBlocksAsync().then(bi => {
             this.blockInfo = bi
             this.nsMap = this.partitionBlocks();
@@ -781,7 +864,83 @@ export class Editor extends toolboxeditor.ToolboxEditor {
             }
             monaco.editor.setModelMarkers(model, 'typescript', monacoErrors);
         }
+    }
 
+    showFieldEditor(range: monaco.Range, fe: pxt.editor.MonacoFieldEditor, viewZoneHeight: number) {
+        if (this.feWidget) {
+            this.feWidget.close();
+        }
+        this.feWidget = new ViewZoneEditorHost(fe, range, this.editor.getModel());
+        this.feWidget.heightInPx = viewZoneHeight;
+        this.feWidget.showAsync(this.editor)
+            .then(edit => {
+                if (edit) {
+                    this.editModelAsync(edit.range, edit.replacement)
+                        .then(newRange => this.indentRangeAsync(newRange));
+                }
+            })
+    }
+
+    protected updateFieldEditors = pxt.Util.debounce(() => {
+        if (!this.hasFieldEditors || pxt.shell.isReadOnly()) return;
+        const model = this.editor.getModel();
+        this.fieldEditors.clearRanges(this.editor);
+
+        this.fieldEditors.allFieldEditors().forEach(fe => {
+            const matcher = fe.matcher;
+            const matches = model.findMatches(matcher.searchString,
+                true,
+                matcher.isRegex,
+                matcher.matchCase,
+                matcher.matchWholeWord ? this.editor.getConfiguration().wordSeparators : null,
+                false);
+
+
+            const decorations: monaco.editor.IModelDeltaDecoration[] = [];
+            matches.forEach(match => {
+                const line = match.range.startLineNumber;
+
+                decorations.push({
+                    range: new monaco.Range(line, model.getLineMinColumn(line), line, model.getLineMaxColumn(line)),
+                    options: {
+                        glyphMarginClassName: fe.glyphCssClass
+                    }
+                });
+
+                this.fieldEditors.trackRange(fe.id, line, match.range);
+
+            });
+            this.fieldEditors.setDecorations(fe.id, this.editor.deltaDecorations([], decorations));
+        });
+
+        if (this.foldFieldEditorRanges) {
+            this.foldFieldEditorRangesAsync();
+        }
+    }, 200)
+
+    protected foldFieldEditorRangesAsync() {
+        if (this.foldFieldEditorRanges) {
+            this.foldFieldEditorRanges = false;
+            const selection = this.editor.getSelection();
+            let selections: monaco.Selection[];
+            return Promise.mapSeries(this.fieldEditors.allRanges(), range => this.indentRangeAsync(range.range))
+                .then(ranges => {
+                    if (!ranges || !ranges.length) return;
+                    selections = ranges.map(rangeToSelection);
+
+                    // This is only safe because indentRangeAsync doesn't change the number of lines and
+                    // we only allow one field editor per line. If we ever change that we should revisit folding
+                    this.editor.setSelections(selections);
+                    const folder = this.getFoldingController();
+
+                    // The folding controller has a delay before it updates its model
+                    // so we need to force it
+                    folder.onModelChanged();
+                    folder.foldUnfoldRecursively(true);
+                })
+                .then(() => this.editor.setSelection(selection));
+        }
+        return Promise.resolve();
     }
 
     private highlightDecorations: string[] = [];
@@ -812,6 +971,7 @@ export class Editor extends toolboxeditor.ToolboxEditor {
 
     private partitionBlocks() {
         const res: pxt.Map<toolbox.BlockDefinition[]> = {};
+        this.topBlocks = [];
 
         const builtInBlocks = snippets.allBuiltinBlocksByName();
 
@@ -823,7 +983,6 @@ export class Editor extends toolboxeditor.ToolboxEditor {
 
         this.blockInfo.blocks.forEach(fn => {
             let ns = (fn.attributes.blockNamespace || fn.namespace).split('.')[0];
-            ns = ns.toLowerCase();
 
             // Don't add the block if there exists a block with the same definition
             if (builtInBlocks[fn.qName]) return;
@@ -841,6 +1000,10 @@ export class Editor extends toolboxeditor.ToolboxEditor {
                 setSubcategory(ns, 'more');
             } else if (subcat) {
                 setSubcategory(ns, subcat);
+            }
+
+            if (fn.attributes.topblock) {
+                this.topBlocks.push(fn);
             }
         });
 
@@ -893,17 +1056,21 @@ export class Editor extends toolboxeditor.ToolboxEditor {
         const namespaces = Object.keys(this.nsMap)
             .filter(ns => !snippets.isBuiltin(ns) && !!this.getNamespaceAttrs(ns));
 
+        function isRemoved(ns: string): boolean {
+            return snippets.getBuiltinCategory(ns).removed;
+        }
+
         let config = pxt.appTarget.runtime || {};
-        if (config.loopsBlocks && !snippets.loops.removed) namespaces.push(snippets.loops.nameid);
-        if (config.logicBlocks && !snippets.logic.removed) namespaces.push(snippets.logic.nameid);
-        if (config.variablesBlocks && !snippets.variables.removed) namespaces.push(snippets.variables.nameid);
-        if (config.mathBlocks && !snippets.maths.removed) namespaces.push(snippets.maths.nameid);
-        if (config.functionBlocks && !snippets.functions.removed) namespaces.push(snippets.functions.nameid);
-        if (config.listsBlocks && !snippets.arrays.removed) namespaces.push(snippets.arrays.nameid);
-        if (config.textBlocks && !snippets.text.removed) namespaces.push(snippets.text.nameid);
+        if (config.loopsBlocks && !isRemoved(toolbox.CategoryNameID.Loops)) namespaces.push(toolbox.CategoryNameID.Loops);
+        if (config.logicBlocks && !isRemoved(toolbox.CategoryNameID.Logic)) namespaces.push(toolbox.CategoryNameID.Logic);
+        if (config.variablesBlocks && !isRemoved(toolbox.CategoryNameID.Variables)) namespaces.push(toolbox.CategoryNameID.Variables);
+        if (config.mathBlocks && !isRemoved(toolbox.CategoryNameID.Maths)) namespaces.push(toolbox.CategoryNameID.Maths);
+        if (config.functionBlocks && !isRemoved(toolbox.CategoryNameID.Functions)) namespaces.push(toolbox.CategoryNameID.Functions);
+        if (config.listsBlocks && !isRemoved(toolbox.CategoryNameID.Arrays)) namespaces.push(toolbox.CategoryNameID.Arrays);
+        if (config.textBlocks && !isRemoved(toolbox.CategoryNameID.Text)) namespaces.push(toolbox.CategoryNameID.Text);
 
         if (pxt.appTarget.cloud && pxt.appTarget.cloud.packages) {
-            namespaces.push(snippets.extensions.nameid);
+            namespaces.push(toolbox.CategoryNameID.Extensions);
         }
 
         return namespaces.concat(super.getNamespaces());
@@ -946,7 +1113,7 @@ export class Editor extends toolboxeditor.ToolboxEditor {
         let cat = snippets.getBuiltinCategory(ns);
         let blocks = cat.blocks || [];
         blocks.forEach(b => { b.noNamespace = true })
-        if (!cat.custom && this.nsMap[ns.toLowerCase()]) blocks = blocks.concat(this.nsMap[ns.toLowerCase()].filter(block => !(block.attributes.blockHidden || block.attributes.deprecated)));
+        if (!cat.custom && this.nsMap[ns]) blocks = blocks.concat(this.nsMap[ns].filter(block => !(block.attributes.blockHidden || block.attributes.deprecated)));
         return this.filterBlocks(subns, blocks);
     }
 
@@ -958,11 +1125,23 @@ export class Editor extends toolboxeditor.ToolboxEditor {
         let monacoFlyout = this.createMonacoFlyout();
 
         if (ns == 'search') {
-            this.showSearchFlyout();
+            try {
+                this.showSearchFlyout();
+            }
+            catch (e) {
+                pxt.reportException(e);
+                pxsim.U.clear(monacoFlyout);
+                this.addNoSearchResultsLabel();
+            }
             return;
         }
 
-        if (this.abstractShowFlyout(treeRow)) {
+        if (ns == 'topblocks') {
+            this.showTopBlocksFlyout();
+            return;
+        }
+
+        if (this.abstractShowFlyout(treeRow) || (treeRow.subcategories && treeRow.subcategories.length > 0)) {
             // Hide editor floats
             this.parent.setState({ hideEditorFloats: true });
         } else {
@@ -970,18 +1149,17 @@ export class Editor extends toolboxeditor.ToolboxEditor {
         }
     }
 
-    protected showFlyoutHeadingLabel(ns: string, subns: string, icon: string, color: string) {
-        const categoryName = name ? name :
-            `${subns ? `${Util.capitalize(ns)} > ${Util.capitalize(subns)}` : Util.capitalize(ns)}`;
+    protected showFlyoutHeadingLabel(ns: string, name: string, subns: string, icon: string, color: string) {
+        const categoryName = name || Util.capitalize(subns || ns);
         const iconClass = `blocklyTreeIcon${icon ? (ns || icon).toLowerCase() : 'Default'}`.replace(/\s/g, '');
 
         this.getMonacoLabel(categoryName,
             'monacoFlyoutLabel monacoFlyoutHeading', true, icon, iconClass, color);
     }
 
-    protected showFlyoutGroupLabel(group: string, groupicon: string, labelLineWidth: string) {
+    protected showFlyoutGroupLabel(group: string, groupicon: string, labelLineWidth: string, helpCallback: string) {
         this.getMonacoLabel(pxt.Util.rlf(`{id:group}${group}`),
-            'monacoFlyoutLabel blocklyFlyoutGroup', false, undefined, undefined, undefined, true, labelLineWidth);
+            'monacoFlyoutLabel blocklyFlyoutGroup', false, undefined, undefined, undefined, true, labelLineWidth, helpCallback);
     }
 
     protected showFlyoutBlocks(ns: string, color: string, blocks: toolbox.BlockDefinition[]) {
@@ -1002,7 +1180,7 @@ export class Editor extends toolboxeditor.ToolboxEditor {
             const nsinfo = that.blockInfo.apis.byQName[ns];
             const color =
                 (nsinfo ? nsinfo.attributes.color : undefined)
-                || pxt.toolbox.getNamespaceColor(ns.toLowerCase())
+                || pxt.toolbox.getNamespaceColor(ns)
                 || `255`;
             return color;
         }
@@ -1044,8 +1222,43 @@ export class Editor extends toolboxeditor.ToolboxEditor {
         this.attachMonacoBlockAccessibility(monacoBlocks);
 
         if (monacoBlocks.length == 0) {
-            this.getMonacoLabel(lf("No search results..."), 'monacoFlyoutLabel');
+            this.addNoSearchResultsLabel();
         }
+    }
+
+    private showTopBlocksFlyout() {
+        let monacoBlocks: HTMLDivElement[] = [];
+        const topBlocks = this.getTopBlocks();
+        const monacoFlyout = this.getMonacoFlyout();
+
+        const that = this;
+        function getNamespaceColor(ns: string) {
+            const nsinfo = that.blockInfo.apis.byQName[ns];
+            const color =
+                (nsinfo ? nsinfo.attributes.color : undefined)
+                || pxt.toolbox.getNamespaceColor(ns)
+                || `255`;
+            return color;
+        }
+
+        if (topBlocks.length == 0) {
+            this.getMonacoLabel(lf("No basic results..."), 'monacoFlyoutLabel');
+        } else {
+            // Show a heading
+            this.showFlyoutHeadingLabel('topblocks', lf("{id:category}Basic"), null,
+                pxt.toolbox.getNamespaceIcon('topblocks'), pxt.toolbox.getNamespaceColor('topblocks'));
+
+            topBlocks.forEach((block) => {
+                monacoBlocks.push(this.getMonacoBlock(block, 'topblocks',
+                    getNamespaceColor(block.attributes.blockNamespace || block.namespace), false));
+            })
+        }
+
+        this.attachMonacoBlockAccessibility(monacoBlocks);
+    }
+
+    private addNoSearchResultsLabel() {
+        this.getMonacoLabel(lf("No search results..."), 'monacoFlyoutLabel');
     }
 
     private getMonacoFlyout() {
@@ -1127,7 +1340,7 @@ export class Editor extends toolboxeditor.ToolboxEditor {
 
     private getMonacoLabel(label: string, className: string,
         hasIcon?: boolean, icon?: string, iconClass?: string, iconColor?: string,
-        hasLine?: boolean, labelLineWidth?: string) {
+        hasLine?: boolean, labelLineWidth?: string, helpCallback?: string) {
         const monacoFlyout = this.getMonacoFlyout();
         const fontSize = this.parent.settings.editorFontSize;
 
@@ -1145,11 +1358,32 @@ export class Editor extends toolboxeditor.ToolboxEditor {
             labelIcon.className = `monacoFlyoutHeadingIcon blocklyTreeIcon ${iconClass}`;
             labelIcon.setAttribute('role', 'presentation');
             labelIcon.style.display = 'inline-block';
-            labelIcon.style.color = `${iconColor}`;
-            labelIcon.textContent = icon;
+            labelIcon.style.color = `${pxt.toolbox.convertColor(iconColor)}`;
+            if (icon.length === 1) {
+                labelIcon.textContent = icon;
+            }
             labelDiv.appendChild(labelIcon);
         }
         labelDiv.appendChild(labelText);
+
+        if (helpCallback && pxt.editor.HELP_IMAGE_URI) {
+            let labelHelpIcon = document.createElement('span');
+            labelHelpIcon.style.display = 'inline-block';
+            labelHelpIcon.style.cursor = 'pointer';
+            labelHelpIcon.draggable = false;
+            const labelHelpIconImage = document.createElement('img');
+            labelHelpIconImage.setAttribute('src', pxt.editor.HELP_IMAGE_URI);
+            labelHelpIconImage.style.height = `${fontSize + 5}px`;
+            labelHelpIconImage.style.width = `${fontSize + 5}px`;
+            labelHelpIconImage.style.verticalAlign = 'middle';
+            labelHelpIconImage.style.marginLeft = '10px';
+            labelHelpIcon.appendChild(labelHelpIconImage);
+            labelDiv.appendChild(labelHelpIcon);
+
+            labelHelpIconImage.addEventListener('click', () => {
+                this.helpButtonCallback(label);
+            });
+        }
 
         monacoFlyout.appendChild(labelDiv);
 
@@ -1161,6 +1395,11 @@ export class Editor extends toolboxeditor.ToolboxEditor {
             labelDiv.appendChild(labelLine);
         }
         return labelDiv;
+    }
+
+    protected helpButtonCallback(group?: string) {
+        pxt.debug(`${group} help icon clicked.`);
+        workspace.fireEvent({ type: 'ui', editor: 'ts', action: 'groupHelpClicked', data: { group } } as pxt.editor.events.UIEvent);
     }
 
     private getMonacoBlock(fn: toolbox.BlockDefinition, ns: string, color: string, isDisabled?: boolean) {
@@ -1187,7 +1426,7 @@ export class Editor extends toolboxeditor.ToolboxEditor {
 
         const comment = fn.attributes.jsDoc;
 
-        let snippetPrefix = fn.noNamespace ? "" : ns;
+        let snippetPrefix = fn.noNamespace ? "" : (fn.attributes.blockNamespace || fn.namespace);
         let isInstance = false;
         let addNamespace = false;
         let namespaceToUse = "";
@@ -1218,12 +1457,12 @@ export class Editor extends toolboxeditor.ToolboxEditor {
                     // first try to get fixed instances whose retType matches nsInfo.name
                     // e.g., DigitalPin
                     let exactInstances = fixedInstances.filter(value =>
-                        value.retType == nsInfo.name)
+                        value.retType == nsInfo.qName)
                         .sort((v1, v2) => v1.name.localeCompare(v2.name));
                     // second choice: use fixed instances whose retType extends type of nsInfo.name
                     // e.g., nsInfo.name == AnalogPin and instance retType == PwmPin
                     let extendedInstances = fixedInstances.filter(value =>
-                        getExtendsTypesFor(nsInfo.name).indexOf(value.retType) !== -1)
+                        getExtendsTypesFor(nsInfo.qName).indexOf(value.retType) !== -1)
                         .sort((v1, v2) => v1.name.localeCompare(v2.name));
                     if (exactInstances.length) {
                         snippetPrefix = `${exactInstances[0].name}`
@@ -1235,7 +1474,7 @@ export class Editor extends toolboxeditor.ToolboxEditor {
                 }
                 else if (element.kind == pxtc.SymbolKind.Method || element.kind == pxtc.SymbolKind.Property) {
                     const params = pxt.blocks.compileInfo(element);
-                    snippetPrefix = params.thisParameter.definitionName;
+                    snippetPrefix = params.thisParameter.defaultValue || params.thisParameter.definitionName;
                     isInstance = true;
                 }
                 else if (nsInfo.kind === pxtc.SymbolKind.Class) {
@@ -1256,6 +1495,8 @@ export class Editor extends toolboxeditor.ToolboxEditor {
             .replace(/(?:\{\{)|(?:\}\})/g, '');
 
         monacoBlock.title = comment;
+
+        color = pxt.toolbox.convertColor(color);
 
         if (!isDisabled) {
             monacoBlock.draggable = true;
@@ -1294,6 +1535,9 @@ export class Editor extends toolboxeditor.ToolboxEditor {
                 monacoEditor.editor.setPosition(endPos);
                 monacoEditor.editor.focus();
                 //monacoEditor.editor.setSelection(new monaco.Range(currPos.lineNumber, currPos.column, endPos.lineNumber, endPos.column));
+
+                // Fire a create event
+                workspace.fireEvent({ type: 'create', editor: 'ts', blockId: fn.attributes.blockId } as pxt.editor.events.CreateEvent);
             };
             monacoBlock.ondragstart = (e: DragEvent) => {
                 pxt.tickEvent("monaco.toolbox.itemdrag", undefined, { interactiveConsent: true });
@@ -1304,6 +1548,9 @@ export class Editor extends toolboxeditor.ToolboxEditor {
                 let insertText = snippetPrefix ? `${snippetPrefix}.${snippet}` : snippet;
                 insertText = addNamespace ? `${firstWord(namespaceToUse)}.${insertText}` : insertText;
                 e.dataTransfer.setData('text', insertText); // IE11 only supports text
+
+                // Fire a create event
+                workspace.fireEvent({ type: 'create', editor: 'ts', blockId: fn.attributes.blockId } as pxt.editor.events.CreateEvent);
             }
             monacoBlock.ondragend = (e: DragEvent) => {
                 monacoFlyout.style.transform = "none";
@@ -1385,8 +1632,66 @@ export class Editor extends toolboxeditor.ToolboxEditor {
         }
         return monacoBlock;
     }
+
+    private indentRangeAsync(range: monaco.IRange): Promise<monaco.IRange> {
+        const model = this.editor.getModel();
+
+        const minIndent = model.getLineFirstNonWhitespaceColumn(range.startLineNumber) - 1;
+        const innerIndent = createIndent(model.getOneIndent().length + minIndent);
+        const lines = model.getValueInRange(range).split(/\n/);
+
+        const newText = lines.map((line, index) => {
+            if (index === 0) {
+                return line.trim();
+            }
+            else if (index === lines.length - 1) {
+                return createIndent(minIndent) + line.trim();
+            }
+            else {
+                return innerIndent + line.trim();
+            }
+        }).join(model.getEOL());
+
+        return this.editModelAsync(range, newText);
+    }
+
+    private editModelAsync(range: monaco.IRange, newText: string): Promise<monaco.IRange> {
+        return new Promise(resolve => {
+            const model = this.editor.getModel();
+            const lines = newText.split("\n");
+            const afterRange = new monaco.Range(range.startLineNumber, range.startColumn,
+                range.startLineNumber + lines.length - 1, lines[lines.length - 1].length)
+
+            const disposable = this.editor.onDidChangeModelContent(e => {
+                disposable.dispose();
+                this.editor.setSelection(afterRange);
+
+                // Clear ranges because the model changed
+                this.fieldEditors.clearRanges(this.editor);
+                resolve(afterRange);
+            });
+
+            model.pushEditOperations(this.editor.getSelections(), [{
+                identifier: { major: 0, minor: 0 },
+                range: model.validateRange(range),
+                text: newText,
+                forceMoveMarkers: true,
+                isAutoWhitespaceEdit: true
+            }], inverseOp => [rangeToSelection(inverseOp[0].range)]);
+        });
+    }
+}
+
+function rangeToSelection(range: monaco.IRange): monaco.Selection {
+    return new monaco.Selection(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn);
 }
 
 function firstWord(s: string) {
     return /[^\.]+/.exec(s)[0]
+}
+
+function createIndent(length: number) {
+    let res = '';
+    for (let i = 0; i < length; i++) res += " ";
+    return res;
 }

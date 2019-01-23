@@ -35,14 +35,15 @@ pxt.setAppTarget({
         isNative: false,
         hasHex: false,
         jsRefCounting: true,
-        floatingPoint: true
+        switches: {}
     },
     bundledpkgs: {},
     appTheme: {},
     tsprj: undefined,
     blocksprj: undefined,
     runtime: {
-        pauseUntilBlock: { category: "Loops", color: "0x0000ff" }
+        pauseUntilBlock: { category: "Loops", color: "0x0000ff" },
+        bannedCategories: ["banned"]
     },
     corepkg: undefined
 });
@@ -100,7 +101,7 @@ function decompileTestAsync(filename: string) {
                     fs.writeFileSync(outFile, decompiled)
                     fail(`${basename} did not match baseline, output written to ${outFile}`);
                 }
-            }, error => fail("Could not decompile: " +  error))
+            }, error => fail("Could not decompile: " +  error.stack))
             .then(() => resolve(), reject)
     });
 }

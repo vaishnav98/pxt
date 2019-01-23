@@ -1,5 +1,6 @@
 import * as pkg from "./package";
 import * as core from "./core";
+import * as workspace from "./workspace";
 
 import U = pxt.Util;
 
@@ -31,7 +32,7 @@ function setDiagnostics(diagnostics: pxtc.KsDiagnostic[]) {
     f.numDiagnosticsOverride = diagnostics.filter(d => d.category == ts.pxtc.DiagnosticCategory.Error).length
 }
 
-let hang = new Promise<any>(() => { })
+let noOpAsync = new Promise<any>(() => { })
 
 function catchUserErrorAndSetDiags(r: any) {
     return (v: any) => {
@@ -52,6 +53,7 @@ export interface CompileOptions {
     background?: boolean; // not explicitly requested by user (hint for simulator)
     forceEmit?: boolean;
     preferredEditor?: string;
+    clickTrigger?: boolean;
 }
 
 export function compileAsync(options: CompileOptions = {}): Promise<pxtc.CompileResult> {
@@ -99,7 +101,7 @@ export function compileAsync(options: CompileOptions = {}): Promise<pxtc.Compile
                     return resp
                 })
         })
-        .catch(catchUserErrorAndSetDiags(hang))
+        .catch(catchUserErrorAndSetDiags(noOpAsync))
 }
 
 function assembleCore(src: string): Promise<{ words: number[] }> {
@@ -144,15 +146,21 @@ export function decompileAsync(fileName: string, blockInfo?: ts.pxtc.BlocksInfo,
 }
 
 export function decompileSnippetAsync(code: string, blockInfo?: ts.pxtc.BlocksInfo): Promise<string> {
-    const snippetTs = "___snippet.ts";
-    const snippetBlocks = "___snippet.blocks";
+    const snippetTs = "main.ts";
+    const snippetBlocks = "main.blocks";
     let trg = pkg.mainPkg.getTargetOptions()
     return pkg.mainPkg.getCompileOptionsAsync(trg)
         .then(opts => {
             opts.fileSystem[snippetTs] = code;
             opts.fileSystem[snippetBlocks] = "";
-            opts.sourceFiles.push(snippetTs);
-            opts.sourceFiles.push(snippetBlocks);
+
+            if (opts.sourceFiles.indexOf(snippetTs) === -1) {
+                opts.sourceFiles.push(snippetTs);
+            }
+            if (opts.sourceFiles.indexOf(snippetBlocks) === -1) {
+                opts.sourceFiles.push(snippetBlocks);
+            }
+
             opts.ast = true;
             return decompileCoreAsync(opts, snippetTs)
         }).then(resp => {
@@ -161,7 +169,7 @@ export function decompileSnippetAsync(code: string, blockInfo?: ts.pxtc.BlocksIn
 }
 
 function decompileCoreAsync(opts: pxtc.CompileOptions, fileName: string): Promise<pxtc.CompileResult> {
-    return workerOpAsync("decompile", { options: opts, fileName: fileName })
+    return workerOpAsync("decompile", { options: opts, fileName: fileName, blocks: blocksOptions() })
 }
 
 export function workerOpAsync(op: string, arg: pxtc.service.OpArg) {
@@ -196,7 +204,21 @@ export function apiSearchAsync(searchFor: pxtc.service.SearchOptions) {
         .then(() => {
             searchFor.localizedApis = cachedApis;
             searchFor.localizedStrings = pxt.Util.getLocalizedStrings();
-            return workerOpAsync("apiSearch", { search: searchFor })
+            return workerOpAsync("apiSearch", { search: searchFor, blocks: blocksOptions() });
+        });
+}
+
+export function projectSearchAsync(searchFor: pxtc.service.ProjectSearchOptions) {
+    return ensureApisInfoAsync()
+        .then(() => {
+            return workerOpAsync("projectSearch", { projectSearch: searchFor });
+        });
+}
+
+export function projectSearchClear() {
+    return ensureApisInfoAsync()
+        .then(() => {
+            return workerOpAsync("projectSearchClear", { });
         });
 }
 
@@ -232,9 +254,257 @@ export function getBlocksAsync(): Promise<pxtc.BlocksInfo> {
         });
 }
 
-export function newProject() {
+export interface UpgradeResult {
+    success: boolean;
+    editor?: string;
+    patchedFiles?: pxt.Map<string>;
+    errorCodes?: pxt.Map<number>;
+}
+
+export function applyUpgradesAsync(): Promise<UpgradeResult> {
+    const mainPkg = pkg.mainPkg;
+    const epkg = pkg.getEditorPkg(mainPkg);
+    const pkgVersion = pxt.semver.parse(epkg.header.targetVersion || "0.0.0");
+    const trgVersion = pxt.semver.parse(pxt.appTarget.versions.target);
+
+    if (pkgVersion.major === trgVersion.major && pkgVersion.minor === trgVersion.minor) {
+        pxt.debug("Skipping project upgrade")
+        return Promise.resolve({
+            success: true
+        });
+    }
+
+    const upgradeOp = epkg.header.editor === pxt.JAVASCRIPT_PROJECT_NAME ? upgradeFromTSAsync : upgradeFromBlocksAsync;
+
+    let projectNeverCompiled = false;
+
+    return checkPatchAsync()
+    .catch(() => projectNeverCompiled = true)
+    .then(upgradeOp)
+    .then(result => {
+        if (!result.success) {
+            pxt.tickEvent("upgrade.failed", {
+                projectEditor: epkg.header.editor,
+                preUpgradeVersion: epkg.header.targetVersion || "unknown",
+                errors: JSON.stringify(result.errorCodes),
+                projectNeverCompiled: "" + projectNeverCompiled
+            });
+
+            pxt.debug("Upgrade failed; bailing out and leaving project as-is");
+
+            return Promise.resolve(result);
+        }
+
+        pxt.tickEvent("upgrade.success", {
+            projectEditor: epkg.header.editor,
+            upgradedEditor: result.editor,
+            preUpgradeVersion: epkg.header.targetVersion || "unknown",
+            projectNeverCompiled: "" + projectNeverCompiled
+        });
+
+        pxt.debug("Upgrade successful!");
+
+        return patchProjectFilesAsync(epkg, result.patchedFiles, result.editor)
+            .then(() => result);
+    })
+}
+
+function upgradeFromBlocksAsync(): Promise<UpgradeResult> {
+    const mainPkg = pkg.mainPkg;
+    const project = pkg.getEditorPkg(mainPkg);
+    const targetVersion = project.header.targetVersion;
+
+    const fileText = project.files["main.blocks"] ? project.files["main.blocks"].content : `<block type="${ts.pxtc.ON_START_TYPE}"></block>`;
+    let ws: Blockly.Workspace;
+    let patchedFiles: pxt.Map<string> = {};
+
+    pxt.debug("Applying upgrades to blocks")
+
+    return  pxt.BrowserUtils.loadBlocklyAsync()
+        .then(() => getBlocksAsync())
+        .then(info => {
+            ws = new Blockly.Workspace();
+            const text = pxt.blocks.importXml(targetVersion, fileText, info, true);
+
+            const xml = Blockly.Xml.textToDom(text);
+            pxt.blocks.domToWorkspaceNoEvents(xml, ws);
+            patchedFiles["main.blocks"] = text;
+            return pxt.blocks.compileAsync(ws, info)
+        })
+        .then(res => {
+            patchedFiles["main.ts"] = res.source;
+            return checkPatchAsync(patchedFiles);
+        })
+        .then(() => {
+            return {
+                success: true,
+                editor: pxt.BLOCKS_PROJECT_NAME,
+                patchedFiles
+            };
+        })
+        .catch(() => {
+            pxt.debug("Block upgrade failed, falling back to TS");
+            return upgradeFromTSAsync();
+        });
+}
+
+function upgradeFromTSAsync(): Promise<UpgradeResult> {
+    const mainPkg = pkg.mainPkg;
+    const project = pkg.getEditorPkg(mainPkg);
+    const targetVersion = project.header.targetVersion;
+
+    const patchedFiles: pxt.Map<string> = {};
+    pxt.Util.values(project.files).filter(isTsFile).forEach(file => {
+        const patched = pxt.patching.patchJavaScript(targetVersion, file.content);
+        if (patched != file.content) {
+            patchedFiles[file.name] = patched;
+        }
+    });
+
+    pxt.debug("Applying upgrades to TypeScript")
+
+    return checkPatchAsync(patchedFiles)
+        .then(() => {
+            return {
+                success: true,
+                editor: pxt.JAVASCRIPT_PROJECT_NAME,
+                patchedFiles
+            };
+        })
+        .catch(e => {
+            return {
+                success: false,
+                errorCodes: e.errorCodes
+            };
+        });
+}
+
+interface UpgradeError extends Error {
+    errorCodes?: pxt.Map<number>;
+}
+
+function checkPatchAsync(patchedFiles?: pxt.Map<string>) {
+    const mainPkg = pkg.mainPkg;
+    return mainPkg.getCompileOptionsAsync()
+        .then(opts => {
+            if (patchedFiles) {
+                Object.keys(opts.fileSystem).forEach(fileName => {
+                    if (patchedFiles[fileName]) {
+                        opts.fileSystem[fileName] = patchedFiles[fileName];
+                    }
+                });
+            }
+            return compileCoreAsync(opts);
+        })
+        .then(res => {
+            if (!res.success) {
+                const errorCodes: pxt.Map<number> = {};
+                if (res.diagnostics) {
+                    res.diagnostics.forEach(d => {
+                        const code = "TS" + d.code;
+                        errorCodes[code] = (errorCodes[code] || 0) + 1;
+                    });
+                }
+
+                const error = new Error("Compile failed on updated package") as UpgradeError;
+                error.errorCodes = errorCodes;
+                return Promise.reject(error);
+            }
+            return Promise.resolve();
+        });
+}
+
+function patchProjectFilesAsync(project: pkg.EditorPackage, patchedFiles: pxt.Map<string>, editor: string) {
+    Object.keys(patchedFiles).forEach(name => project.setFile(name, patchedFiles[name]));
+    project.header.targetVersion = pxt.appTarget.versions.target;
+    project.header.editor = editor;
+    return project.saveFilesAsync();
+}
+
+function isTsFile(file: pkg.File) {
+    return pxt.Util.endsWith(file.getName(), ".ts");
+}
+
+export function updatePackagesAsync(packages: pkg.EditorPackage[], token?: pxt.Util.CancellationToken): Promise<boolean> {
+    const epkg = pkg.mainEditorPkg();
+    let backup: pxt.workspace.Header;
+    let completed = 0;
+    if (token) token.startOperation();
+
+    return workspace.getTextAsync(epkg.header.id)
+        .then(files => workspace.makeBackupAsync(epkg.header, files))
+        .then(newHeader => {
+            backup = newHeader;
+            epkg.header.backupRef = backup.id;
+
+            return workspace.saveAsync(epkg.header);
+        })
+        .then(() => Promise.each(packages, p => {
+                if (token) token.throwIfCancelled();
+                return epkg.updateDepAsync(p.getPkgId())
+                    .then(() => {
+                        ++completed;
+                        if (token && !token.isCancelled()) token.reportProgress(completed, packages.length);
+                    })
+                })
+        )
+        .then(() => pkg.loadPkgAsync(epkg.header.id))
+        .then(() => newProjectAsync())
+        .then(() => checkPatchAsync())
+        .then(() => {
+            if (token) token.throwIfCancelled();
+            delete epkg.header.backupRef;
+            return workspace.saveAsync(epkg.header)
+        })
+        .then(() => /* Success! */ true)
+        .catch(() => {
+            // Something went wrong or we broke the project, so restore the backup
+            return workspace.restoreFromBackupAsync(epkg.header)
+                .then(() => false);
+        })
+        .finally(() => {
+            // Clean up after
+            let cleanupOperation = Promise.resolve();
+            if (backup) {
+                backup.isDeleted = true;
+                cleanupOperation = workspace.saveAsync(backup)
+            }
+
+            return cleanupOperation
+                .finally(() => {
+                    if (token) token.resolveCancel();
+                });
+        });
+}
+
+
+export function newProjectAsync() {
     firstTypecheck = null;
     cachedApis = null;
     cachedBlocks = null;
-    workerOpAsync("reset", {}).done();
+    return workerOpAsync("reset", {});
+}
+
+export function getPackagesWithErrors(): pkg.EditorPackage[] {
+    const badPackages: pxt.Map<pkg.EditorPackage> = {};
+
+    const topPkg = pkg.mainEditorPkg();
+    if (topPkg) {
+        const corePkgs = pxt.Package.corePackages().map(pkg => pkg.name);
+
+        topPkg.forEachFile(file => {
+            if (file.diagnostics && file.diagnostics.length && file.epkg && corePkgs.indexOf(file.epkg.getPkgId()) === -1 && !file.epkg.isTopLevel() &&
+                    file.diagnostics.some(d => d.category === ts.pxtc.DiagnosticCategory.Error)) {
+                badPackages[file.epkg.getPkgId()] = file.epkg;
+            }
+        });
+    }
+    return pxt.Util.values(badPackages);
+}
+
+function blocksOptions(): pxtc.service.BlocksOptions {
+    if (pxt.appTarget && pxt.appTarget.runtime && pxt.appTarget.runtime.bannedCategories && pxt.appTarget.runtime.bannedCategories.length) {
+        return { bannedCategories: pxt.appTarget.runtime.bannedCategories };
+    }
+    return undefined;
 }

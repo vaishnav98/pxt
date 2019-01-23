@@ -26,9 +26,9 @@ export class Editor extends srceditor.Editor {
     maxBufferLength: number = 10000;
     csvHeaders: string[] = [];
 
-    lineColors = ["#f00", "#00f", "#0f0", "#ff0"]
-    hcLineColors = ["000"]
-    currentLineColors = this.lineColors
+    lineColors: string[];
+    hcLineColors: string[];
+    currentLineColors: string[];
     highContrast: boolean = false
 
     //refs
@@ -88,7 +88,9 @@ export class Editor extends srceditor.Editor {
         super(parent)
         window.addEventListener("message", this.processEvent.bind(this), false)
         const serialTheme = pxt.appTarget.serial && pxt.appTarget.serial.editorTheme;
-        this.lineColors = (serialTheme && serialTheme.lineColors) || this.lineColors;
+        this.lineColors = (serialTheme && serialTheme.lineColors) || ["#e00", "#00e", "#0e0"];
+        this.hcLineColors = ["#000"];
+        this.currentLineColors = this.lineColors;
 
         this.goBack = this.goBack.bind(this);
         this.toggleRecording = this.toggleRecording.bind(this);
@@ -118,15 +120,37 @@ export class Editor extends srceditor.Editor {
 
     processEvent(ev: MessageEvent) {
         let msg = ev.data
-        if (msg.type !== "serial") return;
-        const smsg = msg as pxsim.SimulatorSerialMessage
+        if (msg.type === "serial") {
+            this.processEventCore(msg);
+        }
+        else if (msg.type === "bulkserial") {
+            (msg as pxsim.SimulatorBulkSerialMessage).data.forEach(datum => {
+                this.processEventCore({
+                    type: "serial",
+                    data: datum.data,
+                    receivedTime: datum.time,
+                    sim: msg.sim,
+                    id: msg.id
+                } as pxsim.SimulatorSerialMessage);
+            })
+        }
+    }
 
+    processEventCore(smsg: pxsim.SimulatorSerialMessage) {
         smsg.receivedTime = smsg.receivedTime || Util.now();
         if (!this.active) {
             this.saveMessageForLater(smsg);
             return;
         }
         this.processMessage(smsg);
+    }
+
+    mapSource(source: string): string {
+        if (!this.sourceMap[source]) {
+            const sourceIdx = Object.keys(this.sourceMap).length + 1
+            this.sourceMap[source] = lf("source") + sourceIdx.toString()
+        }
+        return this.sourceMap[source]
     }
 
     processMessage(smsg: pxsim.SimulatorSerialMessage) {
@@ -138,15 +162,23 @@ export class Editor extends srceditor.Editor {
         const receivedTime = smsg.receivedTime || Util.now()
 
         this.appendRawData(data);
+        const niceSource = this.mapSource(source);
 
-        if (!this.sourceMap[source]) {
-            const sourceIdx = Object.keys(this.sourceMap).length + 1
-            this.sourceMap[source] = lf("source") + sourceIdx.toString()
+        // packet payload as json
+        if (/^\s*\{[^}]+\}\s*$/.test(data)) {
+            try {
+                const json = JSON.parse(data);
+                const t = parseInt(json["t"]);
+                const s = this.mapSource(json["s"]);
+                const n = json["n"] || "";
+                const v = parseFloat(json["v"]);
+                if (!isNaN(t) && !isNaN(v))
+                    this.appendGraphEntry(s, n, v, receivedTime);
+            }
+            catch (e) { } // invalid js
         }
-        const niceSource = this.sourceMap[source]
-
         // is this a CSV data entry
-        if (/^\s*(-?\d+(\.\d*)?)(\s*,\s*(-?\d+(\.\d*)?))+\s*,?\s*$/.test(data)) {
+        else if (/^\s*(-?\d+(\.\d*)?(e[\+\-]\d+)?)(\s*,\s*(-?\d+(\.\d*)?(e[\+\-]\d+)?))+\s*,?\s*$/.test(data)) {
             data.split(/\s*,\s*/).map(s => parseFloat(s))
                 .filter(d => !isNaN(d))
                 .forEach((d, i) => {
@@ -159,7 +191,7 @@ export class Editor extends srceditor.Editor {
         }
         else {
             // is this a key-value pair, or just a number?
-            const m = /^\s*(([^:]+):)?\s*(-?\d+(\.\d*)?)/i.exec(data);
+            const m = /^\s*(([^:]+):)?\s*(-?\d+(\.\d*)?(e[\+\-]\d+)?)/i.exec(data);
             if (m) {
                 const variable = m[2] || '';
                 const nvalue = parseFloat(m[3]);
@@ -210,24 +242,29 @@ export class Editor extends srceditor.Editor {
                 continue
             }
             if (ch === "\n") {
-                let lastEntry = this.consoleRoot.lastChild
-                let newEntry = document.createElement("div")
-                if (lastEntry && lastEntry.lastChild.textContent == this.consoleBuffer) {
-                    if (lastEntry.childNodes.length == 2) {
-                        //Matches already-collapsed entry
-                        let count = parseInt(lastEntry.firstChild.textContent)
-                        lastEntry.firstChild.textContent = (count + 1).toString()
+                // remove trailing white space
+                this.consoleBuffer = this.consoleBuffer.replace(/\s+$/, '');
+                // if anything remaining...
+                if (this.consoleBuffer.length) {
+                    let lastEntry = this.consoleRoot.lastChild
+                    let newEntry = document.createElement("div")
+                    if (lastEntry && lastEntry.lastChild.textContent == this.consoleBuffer) {
+                        if (lastEntry.childNodes.length == 2) {
+                            //Matches already-collapsed entry
+                            let count = parseInt(lastEntry.firstChild.textContent)
+                            lastEntry.firstChild.textContent = (count + 1).toString()
+                        } else {
+                            //Make a new collapsed entry with count = 2
+                            let newLabel = document.createElement("a")
+                            newLabel.className = "ui horizontal label"
+                            newLabel.textContent = "2"
+                            lastEntry.insertBefore(newLabel, lastEntry.lastChild)
+                        }
                     } else {
-                        //Make a new collapsed entry with count = 2
-                        let newLabel = document.createElement("a")
-                        newLabel.className = "ui horizontal label"
-                        newLabel.textContent = "2"
-                        lastEntry.insertBefore(newLabel, lastEntry.lastChild)
+                        //Make a new non-collapsed entry
+                        newEntry.appendChild(document.createTextNode(this.consoleBuffer))
+                        this.consoleRoot.appendChild(newEntry)
                     }
-                } else {
-                    //Make a new non-collapsed entry
-                    newEntry.appendChild(document.createTextNode(this.consoleBuffer))
-                    this.consoleRoot.appendChild(newEntry)
                 }
             } else {
                 //Buffer is full
@@ -238,7 +275,7 @@ export class Editor extends srceditor.Editor {
             }
             this.consoleBuffer = ""
             this.consoleRoot.scrollTop = this.consoleRoot.scrollHeight
-            if (this.consoleRoot.childElementCount > this.maxConsoleEntries) {
+            while (this.consoleRoot.childElementCount > this.maxConsoleEntries) {
                 this.consoleRoot.removeChild(this.consoleRoot.firstChild)
             }
             if (this.consoleRoot && this.consoleRoot.childElementCount > 0) {
@@ -308,6 +345,21 @@ export class Editor extends srceditor.Editor {
     downloadCSV() {
         const sep = lf("{id:csvseparator}\t");
         let csv: string[] = [];
+
+        const hasData = this.charts.length && this.charts.some((chart) => {
+            return Object.keys(chart.datas).length > 0;
+        });
+
+        if (!hasData) {
+            core.confirmAsync({
+                header: lf("No data to export"),
+                hideAgree: true,
+                disagreeLbl: lf("Ok"),
+                body: lf("You must generate some serial data before you can export it.")
+            });
+            return;
+        }
+
         this.charts.forEach(chart => {
             const lines: { name: string; line: number[][]; }[] = [];
             Object.keys(chart.datas).forEach(k => lines.push({ name: k, line: chart.datas[k] }));
@@ -338,13 +390,13 @@ export class Editor extends srceditor.Editor {
 
         core.infoNotification(lf("Exporting data...."));
         const time = new Date(Date.now()).toString().replace(/[^\d]+/g, '-').replace(/(^-|-$)/g, '');
-        pxt.commands.browserDownloadAsync(csvText, pxt.appTarget.id + '-' + lf("{id:csvfilename}data") + '-' + time + ".csv", "text/csv")
+        pxt.commands.browserDownloadAsync(Util.toUTF8(csvText), pxt.appTarget.id + '-' + lf("{id:csvfilename}data") + '-' + time + ".csv", "text/csv")
     }
 
     downloadRaw() {
         core.infoNotification(lf("Exporting text...."));
         const time = new Date(Date.now()).toString().replace(/[^\d]+/g, '-').replace(/(^-|-$)/g, '');
-        pxt.commands.browserDownloadAsync(this.rawDataBuffer, pxt.appTarget.id + '-' + lf("{id:csvfilename}console") + '-' + time + ".txt", "text/plain")
+        pxt.commands.browserDownloadAsync(Util.toUTF8(this.rawDataBuffer), pxt.appTarget.id + '-' + lf("{id:csvfilename}console") + '-' + time + ".txt", "text/plain")
     }
 
     goBack() {
@@ -370,8 +422,9 @@ export class Editor extends srceditor.Editor {
                 <div id="serialHeader" className="ui serialHeader">
                     <div className="leftHeaderWrapper">
                         <div className="leftHeader">
-                            <sui.Button text={lf("Go back")} title={lf("Go back to the previous editor")} className="icon circular small editorBack left labeled" ariaLabel={lf("Go back")} onClick={this.goBack}>
+                            <sui.Button title={lf("Go back")} tabIndex={0} onClick={this.goBack} onKeyDown={sui.fireClickOnEnter}>
                                 <sui.Icon icon="arrow left" />
+                                <span className="ui text landscape only">{lf("Go back")}</span>
                             </sui.Button>
                         </div>
                     </div>
@@ -526,7 +579,7 @@ class Chart {
         line.append(timestamp, value)
         if (Object.keys(this.lines).length == 1) {
             // update label with last value
-            const valueText = Number(Math.round(Number(value + "e+2")) + "e-2").toString();
+            const valueText = pxsim.Math_.roundWithPrecision(value, 2).toString();
             this.label.innerText = this.variable ? `${this.variable}: ${valueText}` : valueText;
         } else {
             this.label.innerText = this.variable || '';

@@ -3,6 +3,7 @@
 @import 'themes/default/globals/site.variables';
 @import 'themes/pxt/globals/site.variables';
 @import 'fieldeditors';
+@import 'spriteeditor.less';
 
 /*******************************
         Blockly SVG
@@ -91,15 +92,15 @@ text.blocklyText.blocklyBoldItalicizedText {
 *******************************/
 
 .blocklyFlyoutButton {
-    fill: none !important;
+    fill: transparent !important;
 }
 
 .blocklyFlyoutButton:hover {
-    fill: @primaryColor !important;
+    fill: @blocklyFlyoutButtonColor !important;
 }
 
 .blocklyFlyoutButtonBackground {
-    stroke: @primaryColor !important;
+    stroke: @blocklyFlyoutButtonColor !important;
     stroke-width: 3px !important;
 }
 
@@ -148,19 +149,15 @@ path.blocklyFlyoutBackground {
 
 div.blocklyWidgetDiv {
     position: fixed;
-}
-
-/* Lower Z index for BlocklyWidgetDiv and grid picker tooltips */
-
-.blocklyWidgetDiv {
+    /* Lower Z index for BlocklyWidgetDiv and grid picker tooltips */
     z-index: @blocklyWidgetDivZIndex;
 }
 
-.blocklyDropDownDiv {
+div.blocklyDropDownDiv {
     z-index: @blocklyDropdownDivZIndex;
 }
 
-.blocklyTooltipDiv {
+div.blocklyTooltipDiv {
     border: none !important;
     box-shadow: none !important;
     background-color: transparent !important;
@@ -226,6 +223,35 @@ text.blocklyCheckbox {
     stroke: @blocklyScrollbarColor;
 }
 
+/*******************************
+        Context menu
+*******************************/
+
+.blocklyWidgetDiv .blocklyContextMenu {
+    border: 1px solid rgba(34,36,38,.15);
+    box-shadow: 0 1px 2px 0 rgba(34,36,38,.15) !important;
+    padding: 0 !important;
+}
+
+.blocklyWidgetDiv .blocklyContextMenu .goog-menuitem {
+    margin: 0 !important;
+    padding: .92857143em 1.14285714em !important;
+    font: normal 13px @pageFont !important;
+}
+
+.blocklyWidgetDiv .blocklyContextMenu .goog-menuitem-highlight, .blocklyWidgetDiv .blocklyContextMenu .goog-menuitem-hover {
+    border: none !important;
+    padding: .92857143em 1.14285714em !important;
+    background: rgba(0,0,0,.05) !important;
+}
+
+/*******************************
+        Comments
+*******************************/
+
+.blocklyCommentForeignObject {
+    overflow: hidden;
+}
 
 /*******************************
         Media Adjustments

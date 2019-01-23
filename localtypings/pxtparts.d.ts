@@ -3,16 +3,25 @@ declare namespace pxsim {
     interface PinBlockDefinition {
         x: number,
         y: number,
-        labelPosition: "above" | "below";
+        labelPosition?: "above" | "below";
         labels: string[]
     }
-    interface LEDDefinition {
+    interface BoxDefinition {
         x: number;
         y: number;
         w?: number;
         h?: number;
+    }
+    interface LEDDefinition extends BoxDefinition {
         color: string;
         label: string;
+    }
+    interface TouchPadDefinition extends BoxDefinition {
+        label: string; // pin name
+    }
+    interface ButtonDefinition extends BoxDefinition {
+        index?: number; // by button index
+        label?: string; // pin name
     }
     interface BoardImageDefinition {
         image: string,
@@ -21,7 +30,11 @@ declare namespace pxsim {
         height: number,
         pinDist: number,
         pinBlocks: PinBlockDefinition[],
-        leds?: LEDDefinition[]
+        buttons?: ButtonDefinition[];
+        touchPads?: TouchPadDefinition[];
+        leds?: LEDDefinition[];
+        reset?: BoxDefinition;
+        useCrocClips?: boolean;
     }
     interface BoardDefinition {
         id?: string, // optional board id (set to the package id, multiboard only)
@@ -61,7 +74,9 @@ declare namespace pxsim {
         // metadata for each pin
         pinDefinitions: PartPinDefinition[],
         // description of how part is instantiated
-        instantiation: PartSingletonDefinition | PartFunctionDefinition,
+        instantiation?: PartSingletonDefinition | PartFunctionDefinition,
+        // description of how part is instantiated
+        instantiations?: (PartSingletonDefinition | PartFunctionDefinition)[],
         // list describing number and order of assembly instruction steps; the length is how many steps this part needs
         assembly: AssemblyStepDefinition[],
     }
@@ -78,7 +93,7 @@ declare namespace pxsim {
         // the exact centers of each pin; must have as many locations as the "numberOfPins" property
         pinLocations: XY[],
     }
-    export type XY = {x: number, y: number}
+    export type XY = { x: number, y: number }
     export interface PartPinDefinition {
         target: UninstantiatedPinTarget, // e.g.: "ground", "MISO", etc.; see PinType
         style: PinStyle, // e.g.: "male", "female", "solder"; see PinStyle

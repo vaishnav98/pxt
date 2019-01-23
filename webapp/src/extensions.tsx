@@ -55,6 +55,7 @@ export class Extensions extends data.Component<ISettingsProps, ExtensionsState> 
         // called by app when a serial entry is read
         exts.forEach(n => {
             this.send(n, {
+                target: pxt.appTarget.id,
                 type: "pxtpkgext",
                 event: "extconsole",
                 body: {
@@ -76,7 +77,7 @@ export class Extensions extends data.Component<ISettingsProps, ExtensionsState> 
         core.showLoading("reloadproject", lf("loading..."));
         this.props.parent.reloadHeaderAsync()
             .done(() => {
-                this.send(this.state.extension, { type: "pxtpkgext", event: "exthidden" } as pxt.editor.HiddenEvent);
+                this.send(this.state.extension, { target: pxt.appTarget.id, type: "pxtpkgext", event: "exthidden" } as pxt.editor.HiddenEvent);
                 core.hideLoading("reloadproject");
             });
     }
@@ -84,7 +85,7 @@ export class Extensions extends data.Component<ISettingsProps, ExtensionsState> 
     showExtension(extension: string, url: string, consentRequired: boolean) {
         let consent = consentRequired ? this.manager.hasConsent(this.manager.getExtId(extension)) : true;
         this.setState({ visible: true, extension: extension, url: url, consent: consent }, () => {
-            this.send(extension, { type: "pxtpkgext", event: "extshown" } as pxt.editor.ShownEvent);
+            this.send(extension, { target: pxt.appTarget.id, type: "pxtpkgext", event: "extshown" } as pxt.editor.ShownEvent);
         })
     }
 
@@ -99,6 +100,9 @@ export class Extensions extends data.Component<ISettingsProps, ExtensionsState> 
         frame.style.display = 'block';
         if (!frame.src) {
             frame.src = this.state.url + "#" + this.manager.getExtId(this.state.extension);
+            frame.onload = () => {
+                this.send(this.state.extension, { target: pxt.appTarget.id, type: "pxtpkgext", event: "extloaded" } as pxt.editor.LoadedEvent);
+            }
         }
     }
 
@@ -111,17 +115,18 @@ export class Extensions extends data.Component<ISettingsProps, ExtensionsState> 
 
     private updateDimensions() {
         if (this.extensionWrapper) {
-            // Resize current frame
+            // Resize current frame to fit full screen
+            const topOffsetHeight = 60; //px
             const extension = this.extensionWrapper.getAttribute('data-frame');
             if (extension) {
                 const frame = Extensions.getFrame(extension, false);
                 const extensionDialog = document.getElementsByClassName('extensiondialog')[0];
                 if (extensionDialog && frame) {
                     const bb = extensionDialog.getBoundingClientRect();
-                    frame.width = `${this.extensionWrapper.clientWidth}px`;
-                    frame.height = `${this.extensionWrapper.clientHeight}px`;
-                    frame.style.top = `${bb.top + this.extensionWrapper.offsetTop}px`;
-                    frame.style.left = `${bb.left + this.extensionWrapper.offsetLeft}px`;
+                    frame.width = `${window.innerWidth}px`;
+                    frame.height = `${window.innerHeight - topOffsetHeight}px`;
+                    frame.style.top = `${topOffsetHeight}px`;
+                    frame.style.left = `${0}px`;
                 }
             }
         }
@@ -208,7 +213,6 @@ export class Extensions extends data.Component<ISettingsProps, ExtensionsState> 
         frame.className = `extension-frame extension-frame-${name}`;
         frame.allowFullscreen = true;
         frame.setAttribute('sandbox', 'allow-same-origin allow-scripts');
-        (frame as any).sandbox.value = "allow-scripts allow-same-origin"
         frame.frameBorder = "0";
         frame.style.display = "none";
 
@@ -285,7 +289,8 @@ export class Extensions extends data.Component<ISettingsProps, ExtensionsState> 
         const actions: sui.ModalButton[] = action ? [{ label: action, onclick: actionClick }] : undefined;
         if (!needsConsent && visible) this.initializeFrame();
         return (
-            <sui.Modal isOpen={visible} className={`${needsConsent ? 'extensionconsentdialog' : 'extensiondialog'}`} size="fullscreen" closeIcon={false}
+            <sui.Modal isOpen={visible} className={`${needsConsent ? 'extensionconsentdialog' : 'extensiondialog'}`}
+                size={needsConsent ? 'small' : 'fullscreen'} closeIcon={true}
                 onClose={this.hide} dimmer={true} buttons={actions}
                 modalDidOpen={this.updateDimensions} shouldFocusAfterRender={false}
                 onPositionChanged={this.updateDimensions}
@@ -293,7 +298,7 @@ export class Extensions extends data.Component<ISettingsProps, ExtensionsState> 
                 {consent ?
                     <div id="extensionWrapper" data-frame={extension} ref={this.handleExtensionWrapperRef}>
                         {permissionRequest ?
-                            <sui.Modal isOpen={true} className="extensionpermissiondialog basic" size="fullscreen" closeIcon={false} dimmer={true} dimmerClassName="permissiondimmer">
+                            <sui.Modal isOpen={true} className="extensionpermissiondialog basic" closeIcon={false} dimmer={true} dimmerClassName="permissiondimmer">
                                 <div className="permissiondialoginner">
                                     <div className="permissiondialogheader">
                                         {lf("Permission Request")}
